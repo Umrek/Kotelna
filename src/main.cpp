@@ -4,6 +4,7 @@
 #include <LittleFS.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <ArduinoOTA.h>
 #include "max6675.h"
 #include "time.h"
 
@@ -27,7 +28,7 @@ OneWire oneWire(4);
 DallasTemperature sensors(&oneWire);
 MAX6675 thermocouple(18, 5, 19);
 
-// Pomocná funkce pro vypsání adresy senzoru
+// --- Pomocné funkce ---
 void printAddress(DeviceAddress deviceAddress) {
   for (uint8_t i = 0; i < 8; i++) {
     if (deviceAddress[i] < 16) Serial.print("0");
@@ -81,26 +82,17 @@ void logData(float t[], float spal) {
 }
 
 void handleRoot() {
-  // Místo pouhého sensors.requestTemperatures(); zkus toto:
-  sensors.setWaitForConversion(true); // ESP počká, až senzory doměří
   sensors.requestTemperatures();
-  delay(100); // Krátká pauza pro stabilizaci sběrnice
   float t[7];
-  Serial.println("\n--- Aktuální čtení ---");
-  for(int i=0; i<7; i++) {
-    t[i] = sensors.getTempCByIndex(i);
-    Serial.print("Senzor "); Serial.print(i); Serial.print(": ");
-    Serial.print(t[i]); Serial.println(" °C");
-  }
+  for(int i=0; i<7; i++) t[i] = sensors.getTempCByIndex(i);
   float spal = thermocouple.readCelsius() - 8.0;
-  Serial.print("Spaliny: "); Serial.println(spal);
 
   String html = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += "<script src='https://cdn.jsdelivr.net/npm/chart.js'></script>";
   html += "<style>body{font-family:sans-serif; text-align:center; background:#f0f2f5; margin:0; padding:10px;}";
   html += ".box{background:white; padding:15px; margin:10px auto; border-radius:10px; max-width:800px; box-shadow:0 2px 4px rgba(0,0,0,0.1);}</style></head><body>";
   
-  html += "<h2>Stav Kotelny</h2>";
+  html += "<h2>Kotelna - Vzdálená správa</h2>";
   html += "<div class='box' style='display:flex; flex-wrap:wrap; justify-content:center;'>";
   for(int i=0; i<7; i++) {
     String color = (t[i] == -127.0) ? "red" : "black";
@@ -141,35 +133,30 @@ void handleRoot() {
 
 void setup() {
   Serial.begin(115200);
-  delay(1000); // Čas na inicializaci Serialu
+  delay(1000);
   
-  Serial.println("\n\n=== START ESP32 SKENER ===");
   if(!LittleFS.begin(true)) Serial.println("LittleFS Error");
   
   sensors.begin();
-  int deviceCount = sensors.getDeviceCount();
-  Serial.print("Nalezeno senzoru na sbernici: ");
-  Serial.println(deviceCount);
-
-  for (int i = 0; i < deviceCount; i++) {
-    DeviceAddress tempDeviceAddress;
-    if (sensors.getAddress(tempDeviceAddress, i)) {
-      Serial.print("Senzor "); Serial.print(i); Serial.print(" adresa: ");
-      printAddress(tempDeviceAddress);
-      Serial.println();
-    }
-  }
-
+  
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.println("\nWiFi OK");
   
+  // --- Konfigurace OTA ---
+  ArduinoOTA.setHostname("ESP32-Kotelna");
+  // ArduinoOTA.setPassword("kotelna2024"); // Volitelné heslo
+  ArduinoOTA.begin();
+  
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   server.on("/", handleRoot);
   server.begin();
+  
+  Serial.println("System pripraven. OTA aktivni.");
 }
 
 void loop() {
+  ArduinoOTA.handle(); // Obsluha vzdáleného nahrávání
   server.handleClient();
   
   if (millis() - lastLogTime >= logInterval) {
