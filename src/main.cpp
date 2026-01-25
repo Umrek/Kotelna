@@ -24,6 +24,9 @@ unsigned long lastLogTime = 0; // Čas posledního logování
 const unsigned long logInterval = 60000; // 1 minuta
 const int maxRecords = 2880;             // 48 hodin
 
+// --- KOREKCE ČIDEL ---
+const float spalinyOffset = 0.0; // Hodnota korekce pro termočlánek (např. -8.0 stupňů)
+
 // --- KONFIGURACE ČIDEL (ADRESA + NÁZEV) ---
 struct SensorConfig {
   DeviceAddress adr;
@@ -105,7 +108,7 @@ void handleRoot() {
   for(int i=0; i<7; i++) { // Načtení teplot z čidel
     t[i] = sensors.getTempC(mojeCidla[i].adr); // Načtení teploty z čidla
   }
-  float spal = thermocouple.readCelsius() - 0.0; // Korekce teploty spalin
+  float spal = thermocouple.readCelsius() - spalinyOffset; // Korekce teploty spalin
 
   server.sendHeader("Cache-Control", "no-cache"); // Zabránit cachování
   server.sendContent("<html><head><meta charset='UTF-8'><meta http-equiv='refresh' content='60'><meta name='viewport' content='width=device-width, initial-scale=1'>"); // Základní HTML hlavička
@@ -126,6 +129,13 @@ void handleRoot() {
 
   // SEKCE 2: AKUMULACE
   server.sendContent("<div class='box'><h3>2. Akumulační nádrže</h3>"
+                     // Tento kontejner (flex) zajistí zobrazení v jednom řádku
+                     "<div style='display:flex; justify-content:center; flex-wrap:wrap; gap:15px; margin-bottom:15px;'>"
+                       "<div>Horní: <b>"+String(t[2],1)+"°C</b></div>"
+                       "<div>Střed 1: <b>"+String(t[3],1)+"°C</b></div>"
+                       "<div>Střed 2: <b>"+String(t[4],1)+"°C</b></div>"
+                       "<div>Spodek: <b>"+String(t[5],1)+"°C</b></div>"
+                     "</div>"
                      "<div class='chart-container'><canvas id='chartAku'></canvas></div></div>");
 
   // SEKCE 3: VENKOVNÍ TEPLOTA
@@ -259,6 +269,6 @@ void loop() {
     for(int i=0; i<7; i++) { // Načtení teplot z čidel
       temps[i] = sensors.getTempC(mojeCidla[i].adr); // Načtení teploty z čidla
     }
-    logData(temps, thermocouple.readCelsius() - 0.0); // Zápis dat do souboru s korekcí spalin
+    logData(temps, thermocouple.readCelsius() - spalinyOffset); // Zápis dat do souboru s korekcí spalin
   }
 }
