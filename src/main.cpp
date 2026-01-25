@@ -179,6 +179,27 @@ void handleRoot() {
   );
 }
 
+// Funkce pro obsluhu skenování připojených čidel DS18B20
+void handleScan() {
+  String out = "<h2>Nalezena cidla:</h2><pre>";
+  byte addr[8];
+  sensors.begin();
+  oneWire.reset_search();
+  
+  while (oneWire.search(addr)) {
+    out += "DeviceAddress adresa = { ";
+    for (int i = 0; i < 8; i++) {
+      out += "0x";
+      if (addr[i] < 16) out += "0";
+      out += String(addr[i], HEX);
+      if (i < 7) out += ", ";
+    }
+    out += " };\n";
+  }
+  out += "</pre><p>Zahrejte jedno cidlo a obnovte stranku (F5), abyste zjistili, ktere to je.</p>";
+  server.send(200, "text/html", out);
+}
+
 void setup() {
   Serial.begin(115200);
   LittleFS.begin(true); // Start souborového systému
@@ -194,6 +215,9 @@ void setup() {
 
   // Web Update (/update)
   httpUpdater.setup(&server, "/update"); 
+
+  // Scan WiFi sítí (/scan)
+  server.on("/scan", handleScan);
   
   // Synchronizace času přes internet
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
