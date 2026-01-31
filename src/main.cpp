@@ -96,13 +96,29 @@ void logData(float t[], float spal) { // t[] obsahuje 7 teplotních hodnot
   if (lineCount > maxRecords) trimFile(); // Ořezání souboru, pokud je překročen limit
 }
 
+// Získání doby provozu ve formátu "X dny, Y hodin, Z minut"
+String getUptime() {
+  unsigned long ms = millis(); // Získání doby provozu v milisekundách
+  long days = ms / (24L * 3600L * 1000L); // Počet dní
+  long hours = (ms % (24L * 3600L * 1000L)) / (3600L * 1000L); // Počet hodin
+  long minutes = (ms % (3600L * 1000L)) / (60L * 1000L); // Počet minut
+  
+  String res = ""; 
+  if (days > 0) { res += String(days) + " dny, "; } // Přidání dnů, pokud jsou
+  res += String(hours) + " hodin, "; // Přidání hodin
+  res += String(minutes) + " minut"; // Přidání minut
+  return res; // Vrácení formátovaného řetězce
+}
+
 // --- WEBOVÉ STRÁNKY ---
 void handleRoot() {
-  if (isWriting) {
+  // --- DASHBOARD STRÁNKA ---
+  if (isWriting) { 
     server.send(503, "text/plain", "Zapisuji data, zkuste to za vterinu."); // Pokud probíhá zápis, vrať 503
     return;
   }
 
+  // Načtení aktuálních teplot
   sensors.requestTemperatures(); // Požadavek na čtení teplot
   float t[7]; // Pole pro uložení teplot
   for(int i=0; i<7; i++) { // Načtení teplot z čidel
@@ -110,6 +126,7 @@ void handleRoot() {
   }
   float spal = thermocouple.readCelsius() - spalinyOffset; // Korekce teploty spalin
 
+  // Vytvoření HTML stránky
   server.sendHeader("Cache-Control", "no-cache"); // Zabránit cachování
   server.sendContent("<html><head><meta charset='UTF-8'><meta http-equiv='refresh' content='60'><meta name='viewport' content='width=device-width, initial-scale=1'>"); // Základní HTML hlavička
   server.sendContent("<script src='https://cdn.jsdelivr.net/npm/chart.js'></script>"); // Načtení Chart.js knihovny
@@ -119,6 +136,9 @@ void handleRoot() {
                      ".chart-container{position:relative; height:350px; width:100%;}</style></head><body>"); // Stylování grafů
   
   server.sendContent("<h2>Kotelna - Dashboard</h2>"); // Hlavní nadpis
+
+  // Zobrazení doby provozu
+  server.sendContent("<div style='font-size: 0.9em; color: #666; margin-bottom: 20px;'>Systém běží: <b>" + getUptime() + "</b></div>");
 
   // SEKCÍ 1: KOTEL A SPALINY
   server.sendContent("<div class='box'><h3>1. Teplota Kotle a Spalin</h3>"
@@ -199,8 +219,20 @@ void handleRoot() {
     "  {label:'Venkovní teplota', borderColor:'green', data: rawData.map(r => r[7])}"
     "]);"
   );
+  server.sendContent("</script>");
 
-  server.sendContent("</script></body></html>");
+  // Tlačítka pod grafy
+  server.sendContent("<div style='margin: 30px 0;'>");
+  // Tlačítko pro tabulku (zelené)
+  server.sendContent("<a href='/list_page' style='display:inline-block; padding:10px 20px; background:#28a745; color:white; text-decoration:none; border-radius:5px; margin:5px;'>Zobrazit tabulku záznamů</a><br>");
+  // Tlačítko pro čistý restart (modré)
+  server.sendContent("<a href='/restart' onclick='return confirm(\"Opravdu restartovat ESP bez mazani dat?\")' style='display:inline-block; padding:8px 15px; background:#007bff; color:white; text-decoration:none; border-radius:5px; margin:20px 5px 5px 5px; font-size: 0.9em;'>Jen restartovat ESP</a>");
+  server.sendContent("<br><br>");
+  // Tlačítko pro smazání (červené, menší)
+  server.sendContent("<a href='/delete' onclick='return confirm(\"POZOR: Opravdu smazat celou historii?\")' style='color:red; font-size: 0.8em; text-decoration:none; border:1px solid red; padding:5px 10px; border-radius:5px;'>Smazat data a restartovat</a>");
+  
+  server.sendContent("</div>");
+  server.sendContent("</body></html>");
 }
 
 // Funkce pro skenování čidel
@@ -221,7 +253,55 @@ void handleScan() {
   server.send(200, "text/html", out); // Odeslání výsledku
 }
 
-// --- SETUP A LOOP ---
+// Funkce pro zobrazení stránky s tabulkou záznamů
+void handleListPage() {
+  // Pokud probíhá zápis, vrať 503
+  if (isWriting) {
+    server.send(503, "text/plain", "Zapisuji data, zkuste to za vterinu.");
+    return;
+  }
+
+  // Vytvoření HTML stránky s tabulkou
+  String out = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
+  out += "<style>body{font-family:sans-serif; background:#f0f2f5; text-align:center; padding:10px;}";
+  out += "table{width:100%; max-width:800px; margin:20px auto; border-collapse:collapse; background:white; box-shadow:0 2px 4px rgba(0,0,0,0.1);}";
+  out += "th, td{padding:10px; border:1px solid #ddd; font-size: 0.9em;} th{background:#eee;}";
+  out += ".btn{display:inline-block; padding:10px 20px; margin:10px; background:#007bff; color:white; text-decoration:none; border-radius:5px;}</style></head><body>";
+  
+  out += "<h2>Historie záznamů</h2>";
+  out += "<a href='/' class='btn'>← Zpět na Dashboard</a>";
+  out += "<table><tr><th>Čas</th><th>S1</th><th>S2</th><th>S3</th><th>S4</th><th>S5</th><th>S6</th><th>Venku</th><th>Spal</th></tr>";
+
+  // Načtení dat ze souboru a vytvoření řádků tabulky
+  File file = LittleFS.open(filename, FILE_READ);
+  if (file) {
+    while(file.available()){
+      String line = file.readStringUntil('\n');
+      line.trim();
+      if (line.length() > 5) {
+        out += "<tr>";
+        // Rozdělení CSV řádku na buňky
+        int pos = 0;
+        while (pos < line.length()) {
+          int nextComma = line.indexOf(',', pos);
+          String val = (nextComma == -1) ? line.substring(pos) : line.substring(pos, nextComma);
+          val.replace("\"", ""); // Odstranění uvozovek u času
+          out += "<td>" + val + "</td>";
+          if (nextComma == -1) break;
+          pos = nextComma + 1;
+        }
+        out += "</tr>";
+      }
+    }
+    file.close();
+  }
+  
+  // Ukončení tabulky a přidání tlačítka zpět
+  out += "</table><br><a href='/' class='btn'>← Zpět na Dashboard</a></body></html>";
+  server.send(200, "text/html", out);
+}
+
+// Inicializace
 void setup() {
   Serial.begin(115200); // Inicializace sériové komunikace
   LittleFS.begin(true); // Inicializace LittleFS
@@ -246,12 +326,41 @@ void setup() {
   
   // Nastavení webových stránek
   server.on("/", handleRoot);
-  server.on("/scan", handleScan);
-  server.on("/list", []() {
+  server.on("/scan", handleScan); // Stránka pro skenování čidel
+  server.on("/list", []() { // Stránka pro zobrazení obsahu logu
     File file = LittleFS.open(filename, FILE_READ);
     server.streamFile(file, "text/plain");
     file.close();
   });
+  server.on("/delete", []() { // Stránka pro smazání historie a restart
+    LittleFS.remove(filename);
+    String html = "<html><head><meta charset='UTF-8'>";
+    html += "<script>setTimeout(function(){ window.location.href = '/'; }, 8000);</script>"; // Přesměrování za 8s
+    html += "<style>body{font-family:sans-serif; text-align:center; padding-top:50px; background:#f0f2f5;}</style>";
+    html += "</head><body>";
+    html += "<h2>Historie smazána</h2>";
+    html += "<p>Systém se restartuje a čistí grafy. Počkejte prosím...</p>";
+    html += "</body></html>";
+    
+    server.send(200, "text/html", html);
+    delay(1000);
+    ESP.restart();
+  });
+  server.on("/restart", []() { // Stránka pro restart bez mazání
+    String html = "<html><head><meta charset='UTF-8'>"; // Základní HTML hlavička
+    html += "<script>setTimeout(function(){ window.location.href = '/'; }, 8000);</script>"; // Přesměrování za 8s
+    html += "<style>body{font-family:sans-serif; text-align:center; padding-top:50px; background:#f0f2f5;}</style>"; // Stylování stránky
+    html += "</head><body>"; // Tělo stránky
+    html += "<h2>Systém se restartuje...</h2>"; // Nadpis
+    html += "<p>Počkejte prosím, za chvíli vás automaticky přesměruju zpět.</p>"; // Instrukce pro uživatele
+    html += "<div style='margin:20px;'>⏳</div>"; // Ikona načítání
+    html += "</body></html>"; // Ukončení HTML
+
+    server.send(200, "text/html", html); // Odeslání stránky
+    delay(1000); // Krátká pauza před restartem
+    ESP.restart(); // Restart ESP
+  });
+  server.on("/list_page", handleListPage); // Stránka s tabulkou záznamů
 
   server.begin(); // Spuštění webového serveru
 }
