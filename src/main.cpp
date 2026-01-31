@@ -1,3 +1,59 @@
+/* ==========================================================================
+ * PROJEKT: Inteligentní monitoring kotelny (ESP32)
+ * ==========================================================================
+ * * SCHÉMA ZAPOJENÍ PINŮ (Pinout):
+ * * [ TYP SBĚRNICE ]    [ PIN ]    [ POPIS ZAPOJENÍ ]
+ * --------------------------------------------------------------------------
+ * Napájení               microUSB   Vstupní napájení (z USB nebo zdroje)
+ * * OneWire (Digitální)  GPIO 4     Teplotní čidla DS18B20 (7x)
+ *                        3.3V       VCC  (Napájení modulu)
+ *                        GND        GND  (Zem modulu)
+ * - Vyžaduje pull-up rezistor 4.7kΩ k 3.3V, 
+ * - zajištěno přes DS18B20 adaptér pro teplotní sondu - Arduino
+ * * SPI (MAX6675)        GPIO 18    SCK  (Clock - Hodiny)
+ *                        GPIO 19    SO   (MISO - Data z modulu)
+ *                        GPIO 5     CS   (Chip Select - Výběr čipu)
+ *                        3.3V       VCC  (Napájení modulu)
+ *                        GND        GND  (Zem modulu)
+ * * Možnosti pro rozšíření:
+ * * Displej
+ * * I2C (Displej/jiné)   GPIO 21    SDA  (Datová linka - pokud je použit OLED)
+ *                        GPIO 22    SCL  (Hodinová linka)
+ * * Regulace vnetilátoru:
+ * * AC Dimmer (Atmos)    GPIO 12    PWM  (Řízení výkonu ventilátoru)
+ *                        GPIO 14    Z-C  (Zero Cross - detekce průchodu nulou)
+ * --------------------------------------------------------------------------
+ * POZNÁMKY:
+ * - Pro termočlánek spalin (MAX6675) je u delších tras vhodné použít 
+ * stíněný kabel nebo kondenzátor 100nF přímo na svorkách modulu.
+ * - Čidla DS18B20 jsou zapojena v paralele (hvězda/sběrnice).
+ * ==========================================================================
+ * SOFTWAROVÉ SPECIFIKACE A LOKÁLNÍ ÚLOŽIŠTĚ:
+ * ==========================================================================
+ * * POUŽITÉ KNIHOVNY (PlatformIO lib_deps):
+ * - milburton/DallasTemperature @ ^3.9.1
+ * - paulstoffregen/OneWire @ ^2.3.8
+ * - adafruit/MAX6675 library @ ^1.1.2
+ * - LittleFS (Souborový systém pro ESP32 Flash)
+ * * * FORMÁT DAT (CSV):
+ * - Soubory: /history.csv (aktuální), /history_old.csv (předchozí období)
+ * - Vzorkování: 1x za minutu.
+ * - Struktura řádku: "ČAS",S1,S2,S3,S4,S5,S6,S7,SPALINY
+ * - (S1-S6: Kotel/Aku, S7: Venkovní, SPALINY: Termočlánek)
+ * * * INTELIGENTNÍ SPRÁVA PAMĚTI (Rotace):
+ * - Systém automaticky hlídá velikost souboru (maxRecords = 2880 řádků = 48h).
+ * - Při zaplnění se 'history.csv' přejmenuje na 'history_old.csv' (původní archiv se smaže).
+ * - Celková dostupná historie na webu: cca 96 hodin (4 dny) ve dvou souborech.
+ * - Webové rozhraní streamuje data po částech (prevence vyčerpání RAM ESP32).
+ * * * GRAFY (Chart.js):
+ * - Pro zachování plynulosti vykresluje graf každý 10. záznam (10min interval).
+ * - Tabulka v /list_page zobrazuje kompletní nezpracovaná data z obou souborů.
+ * ==========================================================================
+ * AUTOR: Tomáš Zdráhala (zdrahat@gmail.com)
+ * DATUM: 31.1.2026
+ * ==========================================================================
+ */
+
 #include <Arduino.h> // Základní knihovna Arduino
 #include <WiFi.h> // Knihovna pro WiFi připojení
 #include <WebServer.h> // Knihovna pro webový server
@@ -19,10 +75,11 @@ const long  gmtOffset_sec = 3600;      // UTC+1 (střední Evropa)
 const int   daylightOffset_sec = 3600; // Letní čas +1h
 
 // --- NASTAVENÍ LOGOVÁNÍ ---
-const char* filename = "/history.csv"; // Název souboru pro logování
-unsigned long lastLogTime = 0; // Čas posledního logování
+const char* filename = "/history.csv"; 
+const char* oldFilename = "/history_old.csv"; // Záložní soubor
+unsigned long lastLogTime = 0; 
 const unsigned long logInterval = 60000; // 1 minuta
-const int maxRecords = 2880;             // 48 hodin
+const int maxRecords = 2880;             // Po kolika řádcích soubor odsunout (cca 48h při 1 min)
 
 // --- KOREKCE ČIDEL ---
 const float spalinyOffset = 0.0; // Hodnota korekce pro termočlánek (např. -8.0 stupňů)
@@ -61,39 +118,43 @@ String getTimestamp() {
   return String(timeStringBuff); // Vrácení formátovaného času jako String
 }
 
-// Ořezání souboru
-void trimFile() {
-  isWriting = true; // Nastavení indikátoru zápisu
-  File file = LittleFS.open(filename, FILE_READ); // Otevření souboru pro čtení
-  if (!file) { isWriting = false; return; } // Pokud nelze otevřít, ukonči
-  File tempFile = LittleFS.open("/temp.csv", FILE_WRITE); // Dočasný soubor pro zápis
-  if (!tempFile) { file.close(); isWriting = false; return; } // Pokud nelze otevřít, ukonči
-  for(int i=0; i<300; i++) { if(file.available()) file.readStringUntil('\n'); } // Přeskočení prvních 300 řádků
-  while(file.available()) { tempFile.println(file.readStringUntil('\n')); } // Zkopírování zbytku do dočasného souboru
-  file.close(); tempFile.close(); // Zavření obou souborů
-  LittleFS.remove(filename); // Odstranění původního souboru
-  LittleFS.rename("/temp.csv", filename); // Přejmenování dočasného souboru na původní název
+// Ořezání souboru na maximální počet záznamů
+void rotateFiles() {
+  isWriting = true;
+  if (LittleFS.exists(oldFilename)) LittleFS.remove(oldFilename); // Smazat historii
+  LittleFS.rename(filename, oldFilename); // Aktuální se stane historií
   isWriting = false;
+  Serial.println("Provedena rotace souborů.");
 }
 
 // Logování dat
-void logData(float t[], float spal) { // t[] obsahuje 7 teplotních hodnot
-  isWriting = true; // Nastavení indikátoru zápisu
-  File file = LittleFS.open(filename, FILE_APPEND); // Otevření souboru pro přidávání dat
-  if (file) { // Pokud je soubor otevřen
-    file.print("\"" + getTimestamp() + "\""); // Zápis časové značky 
-    for(int i=0; i<7; i++) { // Zápis teplotních hodnot
-      file.print(","); file.print(t[i], 1); // Jedna desetinná místa
-    } 
-    file.print(","); file.println(spal, 1); // Zápis teploty spalin
-    file.close(); // Zavření souboru
+void logData(float t[], float spal) {
+  int lineCount = 0;
+  // 1. Zjistíme aktuální počet řádků (pokud soubor existuje)
+  if (LittleFS.exists(filename)) {
+    File countFile = LittleFS.open(filename, FILE_READ);
+    while(countFile.available()) { 
+      if(countFile.read() == '\n') lineCount++; 
+    }
+    countFile.close();
   }
-  int lineCount = 0; // Počítadlo řádků
-  File countFile = LittleFS.open(filename, FILE_READ); // Otevření souboru pro čtení
-  while(countFile.available()) { if(countFile.read() == '\n') lineCount++; } // Počítání řádků
-  countFile.close(); // Zavření souboru
-  isWriting = false; // Reset indikátoru zápisu
-  if (lineCount > maxRecords) trimFile(); // Ořezání souboru, pokud je překročen limit
+
+  // 2. Zapíšeme nový řádek
+  isWriting = true;
+  File file = LittleFS.open(filename, FILE_APPEND);
+  if (file) {
+    file.print("\"" + getTimestamp() + "\"");
+    for(int i=0; i<7; i++) {
+      file.print(","); file.print(t[i], 1);
+    } 
+    file.print(","); file.println(spal, 1);
+    file.close();
+    lineCount++; // Přičteme právě zapsaný řádek
+  }
+  isWriting = false;
+
+  // 3. Pokud jsme přesáhli limit, provedeme rotaci
+  if (lineCount > maxRecords) rotateFiles();
 }
 
 // Získání doby provozu ve formátu "X dny, Y hodin, Z minut"
@@ -128,17 +189,20 @@ void handleRoot() {
 
   // Vytvoření HTML stránky
   server.sendHeader("Cache-Control", "no-cache"); // Zabránit cachování
-  server.sendContent("<html><head><meta charset='UTF-8'><meta http-equiv='refresh' content='60'><meta name='viewport' content='width=device-width, initial-scale=1'>"); // Základní HTML hlavička
-  server.sendContent("<script src='https://cdn.jsdelivr.net/npm/chart.js'></script>"); // Načtení Chart.js knihovny
-  server.sendContent("<style>body{font-family:sans-serif; text-align:center; background:#f0f2f5; padding:10px;} " // Stylování stránky
-                     ".box{background:white; padding:15px; margin:15px auto; border-radius:10px; max-width:900px; box-shadow:0 2px 4px rgba(0,0,0,0.1);} " // Box styl
-                     "h3{color:#333; border-bottom:1px solid #eee; padding-bottom:10px;} " // Nadpisy
-                     ".chart-container{position:relative; height:350px; width:100%;}</style></head><body>"); // Stylování grafů
-  
-  server.sendContent("<h2>Kotelna - Dashboard</h2>"); // Hlavní nadpis
+  server.sendContent("<html><head><meta charset='UTF-8'><meta http-equiv='refresh' content='60'><meta name='viewport' content='width=device-width, initial-scale=1'>");
+  server.sendContent("<script src='https://cdn.jsdelivr.net/npm/chart.js'></script>");
+  server.sendContent("<style>body{font-family:sans-serif; text-align:center; background:#f0f2f5; padding:10px;} .box{background:white; padding:15px; margin:15px auto; border-radius:10px; max-width:900px; box-shadow:0 2px 4px rgba(0,0,0,0.1);} .chart-container{position:relative; height:350px; width:100%;} .progress{width:200px; background:#ddd; height:10px; border-radius:5px; margin:5px auto;} .bar{height:100%; border-radius:5px;}</style></head><body>");
 
-  // Zobrazení doby provozu
-  server.sendContent("<div style='font-size: 0.9em; color: #666; margin-bottom: 20px;'>Systém běží: <b>" + getUptime() + "</b></div>");
+  server.sendContent("<h2>Kotelna - Dashboard</h2>");
+
+  // --- UKAZATEL PAMĚTI ---
+  size_t total = LittleFS.totalBytes();
+  size_t used = LittleFS.usedBytes();
+  float per = (float)used / total * 100.0;
+  server.sendContent("<div style='font-size: 0.8em; color: #666;'>Využití paměti: <b>" + String(per, 1) + "%</b></div>");
+  server.sendContent("<div class='progress'><div class='bar' style='width:"+String(per)+"%; background:"+(per>80?"red":"#28a745")+";'></div></div>");
+  // --- UKAZATEL DOBY PROVOZU ---
+  server.sendContent("<div style='font-size: 0.9em; color: #666; margin-top:10px;'>Systém běží: <b>" + getUptime() + "</b></div>");
 
   // SEKCÍ 1: KOTEL A SPALINY
   server.sendContent("<div class='box'><h3>1. Teplota Kotle a Spalin</h3>"
@@ -163,24 +227,34 @@ void handleRoot() {
                      "<div style='margin-bottom:10px;'>Aktuálně venku: <b>"+String(t[6],1)+"°C</b></div>"
                      "<div class='chart-container'><canvas id='chartVenku'></canvas></div></div>");
 
-  // --- JAVASCRIPT ---
-  server.sendContent("<script>var rawData = ["); // Načtení dat ze souboru
-  File file = LittleFS.open(filename, FILE_READ); // Otevření souboru pro čtení
-  if (file) { // Pokud je soubor otevřen
-    int lineCounter = 0; // Počítadlo řádků
-    while(file.available()){ // Čtení řádků
-      String line = file.readStringUntil('\n'); line.trim(); // Ořezání bílých znaků
-      if (lineCounter++ % 10 == 0 && line.length() > 5) { // Každý 10. řádek pro zmenšení dat
-        if (line.startsWith("\"")) { server.sendContent("[" + line + "],"); } // Pokud řádek začíná uvozovkami
-        else {
-           int firstComma = line.indexOf(','); // Najdi první čárku
-           if (firstComma > 0) server.sendContent("[\"" + line.substring(0, firstComma) + "\"" + line.substring(firstComma) + "],"); // Přidej uvozovky kolem časové značky
+  // --- JAVASCRIPT: SPOJENÍ SOUBORŮ ---
+  server.sendContent("<script>var rawData = ["); // Začátek pole pro data
+  // Funkce pro streamování dat ze souboru do JavaScriptu
+  auto streamFileToJS = [&](const char* path) {
+    File f = LittleFS.open(path, FILE_READ);
+    if (f) {
+      int lineCount = 0;
+      while(f.available()) {
+        String line = f.readStringUntil('\n'); line.trim();
+        // Změna: Bereme každý 10. řádek (při minutovém logování = 10min interval v grafu)
+        if (line.length() > 5 && lineCount++ % 10 == 0) {
+          if (line.startsWith("\"")) server.sendContent("[" + line + "],");
+          else {
+            int c = line.indexOf(',');
+            if (c > 0) server.sendContent("[\"" + line.substring(0, c) + "\"" + line.substring(c) + "],");
+          }
         }
       }
+      f.close();
     }
-    file.close(); // Zavření souboru
-  }
-  server.sendContent("]; var labels = rawData.map(r => r[0]);"); // Extrahování časových značek
+  };
+
+  streamFileToJS(oldFilename); // Prvně stará data
+  streamFileToJS(filename);    // Pak nová data
+
+  // Omezení na posledních 288 bodů (2 dny při 10min rozlišení)
+  server.sendContent("]; if(rawData.length > 288) rawData = rawData.slice(-288);"); // Omezení dat na posledních 288 záznamů
+  server.sendContent("var labels = rawData.map(r => r[0]);"); // Vytvoření popisků z časových značek
 
   // Funkce pro zjednodušení tvorby grafů
   server.sendContent( // JavaScript funkce pro vykreslení grafu
@@ -239,119 +313,128 @@ void handleRoot() {
 
 // Funkce pro skenování čidel
 void handleScan() {
+  // Pokud probíhá zápis, vrať 503
   String out = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
+  // Stylování stránky
   out += "<style>body{font-family:sans-serif; background:#f0f2f5; text-align:center; padding:10px;}";
-  out += "table{width:100%; max-width:800px; margin:20px auto; border-collapse:collapse; background:white;}";
-  out += "th, td{padding:10px; border:1px solid #ddd; font-family:monospace;} th{background:#eee;}";
-  out += ".new{background:#ffcccc; font-weight:bold;} .known{color:#28a745;}";
-  out += ".btn{display:inline-block; padding:10px 20px; margin:10px; background:#007bff; color:white; text-decoration:none; border-radius:5px;}</style></head><body>";
-  
-  out += "<h2>Skenování čidel na sběrnici</h2>";
+  out += "table{width:100%; max-width:900px; margin:20px auto; border-collapse:collapse; background:white; box-shadow:0 2px 4px rgba(0,0,0,0.1);}";
+  out += "th, td{padding:10px; border:1px solid #ddd; font-family:monospace; font-size:0.9em;} th{background:#eee;}";
+  out += ".new{background:#fff3cd; font-weight:bold; color:#856404;} .known{color:#28a745; font-weight:bold;}";
+  out += ".btn{display:inline-block; padding:10px 20px; margin:10px; background:#007bff; color:white; text-decoration:none; border-radius:5px; font-weight:bold;}</style></head><body>";
+  // Hlavní nadpis a tlačítka
+  out += "<h2>Skenování OneWire sběrnice</h2>";
   out += "<a href='/' class='btn'>← Zpět na Dashboard</a>";
-  out += "<a href='/scan' class='btn' style='background:#28a745;'>Znovu oskenovat</a>";
-  
-  out += "<table><tr><th>Pořadí</th><th>Adresa (HEX)</th><th>Stav / Název</th></tr>";
+  out += "<a href='/scan' class='btn' style='background:#28a745;'>Aktualizovat sken</a>";
+  // Tabulka výsledků
+  out += "<table><tr><th>#</th><th>Nalezená adresa (pro kód)</th><th>Stav / Přiřazení</th></tr>";
 
-  byte addr[8];
-  int count = 0;
-  oneWire.reset_search();
+  // Skenování sběrnice
+  byte addr[8]; // Pole pro adresu čidla
+  int count = 0; // Počítadlo čidel
+  oneWire.reset_search(); // Reset vyhledávání čidel
 
+  // Smyčka pro nalezení všech čidel na sběrnici
   while (oneWire.search(addr)) {
-    count++;
-    String hexAddr = "";
+    count++; // Zvýšení počítadla čidel
+    
+    // Formátování adresy pro snadné kopírování do kódu
+    String hexAddr = "{";
     for (uint8_t i = 0; i < 8; i++) {
+      hexAddr += "0x";
       if (addr[i] < 16) hexAddr += "0";
       hexAddr += String(addr[i], HEX);
       if (i < 7) hexAddr += ", ";
     }
+    hexAddr += "}";
 
-    // Porovnání s tvými známými čidly
-    String name = "NEZNÁMÉ - NOVÉ ČIDLO!";
+    // Kontrola, zda je čidlo známé
+    String name = "NEZNÁMÉ ČIDLO (NOVÉ)";
     bool known = false;
 
-    // Pole tvých známých adres pro kontrolu
-    byte znamaCidla[7][8] = {
-      { 0x28, 0x40, 0x43, 0x0c, 0x50, 0x25, 0x06, 0x46 },
-      { 0x28, 0xcc, 0xf7, 0x88, 0x43, 0x25, 0x06, 0xf8 },
-      { 0x28, 0xda, 0x01, 0xf4, 0x43, 0x25, 0x06, 0x91 },
-      { 0x28, 0x66, 0x58, 0xfa, 0x42, 0x25, 0x06, 0x33 },
-      { 0x28, 0x76, 0x9f, 0xbc, 0x43, 0x25, 0x06, 0x59 },
-      { 0x28, 0x15, 0x0e, 0xe4, 0x43, 0x25, 0x06, 0x7d },
-      { 0x28, 0xbb, 0x8a, 0x10, 0x43, 0x25, 0x06, 0x99 }
-    };
-    String jmenaCidel[] = {"Vstup kotle", "Výstup kotle", "Aku - Horní", "Aku - Střed 1", "Aku - Střed 2", "Aku - Dolní", "Venkovní"};
-
+    // Prohledání tvého pole mojeCidla (velikost 7)
     for (int i = 0; i < 7; i++) {
-      if (memcmp(addr, znamaCidla[i], 8) == 0) {
-        name = jmenaCidel[i];
+      if (memcmp(addr, mojeCidla[i].adr, 8) == 0) {
+        name = mojeCidla[i].name;
         known = true;
         break;
       }
     }
-
+    // Přidání řádku do tabulky
     out += "<tr" + String(known ? "" : " class='new'") + ">";
     out += "<td>" + String(count) + "</td>";
-    out += "<td>0x" + hexAddr + "</td>";
-    out += "<td" + String(known ? " class='known'" : "") + ">" + name + "</td>";
+    out += "<td>" + hexAddr + "</td>";
+    out += "<td>" + (known ? "<span class='known'>✓ " + name + "</span>" : "⚠️ " + name) + "</td>";
     out += "</tr>";
   }
-
+  // Pokud nebyla nalezena žádná čidla
   if (count == 0) {
-    out += "<tr><td colspan='3'>Žádná čidla nebyla nalezena! Zkontrolujte zapojení.</td></tr>";
+    out += "<tr><td colspan='3' style='padding:20px; color:red;'>Nebyla nalezena ŽÁDNÁ čidla! Zkontrolujte napájení a data pin (GPIO 4).</td></tr>";
   }
 
-  out += "</table><p>Celkem nalezeno čidel: " + String(count) + "</p>";
-  out += "<a href='/' class='btn'>← Zpět na Dashboard</a></body></html>";
+  // Ukončení tabulky a přidání tipů
+  out += "</table><p>Na sběrnici je aktuálně <b>" + String(count) + "</b> aktivních čidel.</p>";
+  out += "<div style='background:#fff; padding:15px; max-width:800px; margin:auto; font-size:0.8em; color:#666; text-align:left; border-left:4px solid #007bff;'>";
+  out += "<b>Tip:</b> Pokud vidíš žlutý řádek, čidlo je připojené, ale jeho adresa není v kódu. Zkopíruj adresu v závorce a vlož ji do pole <i>mojeCidla</i>.";
+  out += "</div><br><a href='/' class='btn'>← Zpět na Dashboard</a></body></html>";
   
   server.send(200, "text/html", out);
 }
 
-// Funkce pro zobrazení stránky s tabulkou záznamů
+// Stránka pro zobrazení kompletní historie v tabulce
 void handleListPage() {
-  // Pokud probíhá zápis, vrať 503
   if (isWriting) {
-    server.send(503, "text/plain", "Zapisuji data, zkuste to za vterinu.");
+    server.send(503, "text/plain", "Zapisuji data...");
     return;
   }
 
-  // Vytvoření HTML stránky s tabulkou
-  String out = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
-  out += "<style>body{font-family:sans-serif; background:#f0f2f5; text-align:center; padding:10px;}";
-  out += "table{width:100%; max-width:800px; margin:20px auto; border-collapse:collapse; background:white; box-shadow:0 2px 4px rgba(0,0,0,0.1);}";
-  out += "th, td{padding:10px; border:1px solid #ddd; font-size: 0.9em;} th{background:#eee;}";
-  out += ".btn{display:inline-block; padding:10px 20px; margin:10px; background:#007bff; color:white; text-decoration:none; border-radius:5px;}</style></head><body>";
-  
-  out += "<h2>Historie záznamů</h2>";
-  out += "<a href='/' class='btn'>← Zpět na Dashboard</a>";
-  out += "<table><tr><th>Čas</th><th>S1</th><th>S2</th><th>S3</th><th>S4</th><th>S5</th><th>S6</th><th>Venku</th><th>Spal</th></tr>";
-
-  // Načtení dat ze souboru a vytvoření řádků tabulky
-  File file = LittleFS.open(filename, FILE_READ);
-  if (file) {
-    while(file.available()){
-      String line = file.readStringUntil('\n');
-      line.trim();
-      if (line.length() > 5) {
-        out += "<tr>";
-        // Rozdělení CSV řádku na buňky
-        int pos = 0;
-        while (pos < line.length()) {
-          int nextComma = line.indexOf(',', pos);
-          String val = (nextComma == -1) ? line.substring(pos) : line.substring(pos, nextComma);
-          val.replace("\"", ""); // Odstranění uvozovek u času
-          out += "<td>" + val + "</td>";
-          if (nextComma == -1) break;
-          pos = nextComma + 1;
+  // Posíláme hlavičku hned, abychom neplnili RAM řetězcem 'out'
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html", "");
+  // Začátek HTML stránky
+  server.sendContent("<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>");
+  server.sendContent("<style>body{font-family:sans-serif; background:#f0f2f5; text-align:center; padding:10px;}");
+  server.sendContent("table{width:100%; max-width:850px; margin:20px auto; border-collapse:collapse; background:white; box-shadow:0 2px 4px rgba(0,0,0,0.1);}");
+  server.sendContent("th, td{padding:8px 5px; border:1px solid #ddd; font-size: 0.85em;} th{background:#eee;}");
+  server.sendContent(".sep{background:#007bff; color:white; font-weight:bold; padding:10px;}");
+  server.sendContent(".btn{display:inline-block; padding:10px 20px; margin:10px; background:#007bff; color:white; text-decoration:none; border-radius:5px;}</style></head><body>");
+  // Hlavní nadpis
+  server.sendContent("<h2>Kompletní historie</h2>");
+  server.sendContent("<a href='/' class='btn'>← Zpět na Dashboard</a>");
+  server.sendContent("<table><tr><th>Čas</th><th>S1</th><th>S2</th><th>S3</th><th>S4</th><th>S5</th><th>S6</th><th>Venku</th><th>Spal</th></tr>");
+  // Funkce pro vykreslení řádků ze souboru
+  auto renderFileRows = [&](const char* path, String label) {
+    if (LittleFS.exists(path)) {
+      server.sendContent("<tr><td colspan='9' class='sep'>" + label + "</td></tr>");
+      File file = LittleFS.open(path, FILE_READ);
+      if (file) {
+        while(file.available()){
+          String line = file.readStringUntil('\n');
+          line.trim();
+          if (line.length() > 5) {
+            String row = "<tr>";
+            int pos = 0;
+            while (pos < line.length()) {
+              int nextComma = line.indexOf(',', pos);
+              String val = (nextComma == -1) ? line.substring(pos) : line.substring(pos, nextComma);
+              val.replace("\"", ""); 
+              row += "<td>" + val + "</td>";
+              if (nextComma == -1) break;
+              pos = nextComma + 1;
+            }
+            row += "</tr>";
+            server.sendContent(row); // Posíláme řádek po řádku
+          }
         }
-        out += "</tr>";
+        file.close();
       }
     }
-    file.close();
-  }
-  
+  };
+  // Vykreslení řádků ze starého a aktuálního souboru
+  renderFileRows(oldFilename, "Starší historie (archiv)");
+  renderFileRows(filename, "Aktuální záznamy");
   // Ukončení tabulky a přidání tlačítka zpět
-  out += "</table><br><a href='/' class='btn'>← Zpět na Dashboard</a></body></html>";
-  server.send(200, "text/html", out);
+  server.sendContent("</table><br><a href='/' class='btn'>← Zpět na Dashboard</a></body></html>");
+  server.sendContent(""); // Ukončení přenosu
 }
 
 // Inicializace
@@ -386,7 +469,9 @@ void setup() {
     file.close();
   });
   server.on("/delete", []() { // Stránka pro smazání historie a restart
-    LittleFS.remove(filename);
+    LittleFS.remove(filename); // Smazat aktuální soubor
+    LittleFS.remove(oldFilename); // Smazat i archiv!
+    // Vytvoření jednoduché HTML stránky s informací o restartu
     String html = "<html><head><meta charset='UTF-8'>";
     html += "<script>setTimeout(function(){ window.location.href = '/'; }, 8000);</script>"; // Přesměrování za 8s
     html += "<style>body{font-family:sans-serif; text-align:center; padding-top:50px; background:#f0f2f5;}</style>";
@@ -394,10 +479,10 @@ void setup() {
     html += "<h2>Historie smazána</h2>";
     html += "<p>Systém se restartuje a čistí grafy. Počkejte prosím...</p>";
     html += "</body></html>";
-    
+    // Odeslání stránky
     server.send(200, "text/html", html);
     delay(1000);
-    ESP.restart();
+    ESP.restart(); // Restart ESP
   });
   server.on("/restart", []() { // Stránka pro restart bez mazání
     String html = "<html><head><meta charset='UTF-8'>"; // Základní HTML hlavička
