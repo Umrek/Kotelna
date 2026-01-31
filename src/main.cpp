@@ -221,36 +221,89 @@ void handleRoot() {
   );
   server.sendContent("</script>");
 
-  // Tlačítka pod grafy
+  // SEKCE 4: Tlačítka pod grafy
   server.sendContent("<div style='margin: 30px 0;'>");
   // Tlačítko pro tabulku (zelené)
-  server.sendContent("<a href='/list_page' style='display:inline-block; padding:10px 20px; background:#28a745; color:white; text-decoration:none; border-radius:5px; margin:5px;'>Zobrazit tabulku záznamů</a><br>");
+  server.sendContent("<a href='/list_page' style='display:inline-block; padding:10px 20px; background:#28a745; color:white; text-decoration:none; border-radius:5px; margin:5px;'>Zobrazit tabulku záznamů</a>");
+  // Tlačítko pro skenování čidel (šedé)
+  server.sendContent("<a href='/scan' style='display:inline-block; padding:10px 20px; background:#6c757d; color:white; text-decoration:none; border-radius:5px; margin:5px;'>Skenovat čidla</a><br>");
   // Tlačítko pro čistý restart (modré)
-  server.sendContent("<a href='/restart' onclick='return confirm(\"Opravdu restartovat ESP bez mazani dat?\")' style='display:inline-block; padding:8px 15px; background:#007bff; color:white; text-decoration:none; border-radius:5px; margin:20px 5px 5px 5px; font-size: 0.9em;'>Jen restartovat ESP</a>");
+  server.sendContent("<a href='/restart' onclick='return confirm(\"Opravdu restartovat ESP bez mazani dat?\")' style='display:inline-block; padding:8px 15px; background:#007bff; color:white; text-decoration:none; border-radius:5px; margin:20px 5px 5px 5px; font-size: 0.9em;'>Restartovat ESP</a>");
   server.sendContent("<br><br>");
   // Tlačítko pro smazání (červené, menší)
   server.sendContent("<a href='/delete' onclick='return confirm(\"POZOR: Opravdu smazat celou historii?\")' style='color:red; font-size: 0.8em; text-decoration:none; border:1px solid red; padding:5px 10px; border-radius:5px;'>Smazat data a restartovat</a>");
-  
   server.sendContent("</div>");
+
   server.sendContent("</body></html>");
 }
 
 // Funkce pro skenování čidel
 void handleScan() {
-  String out = "<h2>Nalezena cidla (ID pro kód):</h2><pre>";
-  byte addr[8]; // Pole pro adresu čidla
-  sensors.begin(); // Inicializace čidel
-  oneWire.reset_search(); // Reset vyhledávání
-  while (oneWire.search(addr)) { // Hledání čidel
-    out += "DeviceAddress adresa = { "; // Výpis adresy čidla
-    for (int i = 0; i < 8; i++) { // Pro každý byte adresy
-      out += "0x"; if (addr[i] < 16) out += "0"; // Přidání nuly pro jednobodové hex hodnoty
-      out += String(addr[i], HEX); if (i < 7) out += ", "; // Přidání čárky mezi byty
+  String out = "<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
+  out += "<style>body{font-family:sans-serif; background:#f0f2f5; text-align:center; padding:10px;}";
+  out += "table{width:100%; max-width:800px; margin:20px auto; border-collapse:collapse; background:white;}";
+  out += "th, td{padding:10px; border:1px solid #ddd; font-family:monospace;} th{background:#eee;}";
+  out += ".new{background:#ffcccc; font-weight:bold;} .known{color:#28a745;}";
+  out += ".btn{display:inline-block; padding:10px 20px; margin:10px; background:#007bff; color:white; text-decoration:none; border-radius:5px;}</style></head><body>";
+  
+  out += "<h2>Skenování čidel na sběrnici</h2>";
+  out += "<a href='/' class='btn'>← Zpět na Dashboard</a>";
+  out += "<a href='/scan' class='btn' style='background:#28a745;'>Znovu oskenovat</a>";
+  
+  out += "<table><tr><th>Pořadí</th><th>Adresa (HEX)</th><th>Stav / Název</th></tr>";
+
+  byte addr[8];
+  int count = 0;
+  oneWire.reset_search();
+
+  while (oneWire.search(addr)) {
+    count++;
+    String hexAddr = "";
+    for (uint8_t i = 0; i < 8; i++) {
+      if (addr[i] < 16) hexAddr += "0";
+      hexAddr += String(addr[i], HEX);
+      if (i < 7) hexAddr += ", ";
     }
-    out += " };\n"; // Ukončení řádku
+
+    // Porovnání s tvými známými čidly
+    String name = "NEZNÁMÉ - NOVÉ ČIDLO!";
+    bool known = false;
+
+    // Pole tvých známých adres pro kontrolu
+    byte znamaCidla[7][8] = {
+      { 0x28, 0x40, 0x43, 0x0c, 0x50, 0x25, 0x06, 0x46 },
+      { 0x28, 0xcc, 0xf7, 0x88, 0x43, 0x25, 0x06, 0xf8 },
+      { 0x28, 0xda, 0x01, 0xf4, 0x43, 0x25, 0x06, 0x91 },
+      { 0x28, 0x66, 0x58, 0xfa, 0x42, 0x25, 0x06, 0x33 },
+      { 0x28, 0x76, 0x9f, 0xbc, 0x43, 0x25, 0x06, 0x59 },
+      { 0x28, 0x15, 0x0e, 0xe4, 0x43, 0x25, 0x06, 0x7d },
+      { 0x28, 0xbb, 0x8a, 0x10, 0x43, 0x25, 0x06, 0x99 }
+    };
+    String jmenaCidel[] = {"Vstup kotle", "Výstup kotle", "Aku - Horní", "Aku - Střed 1", "Aku - Střed 2", "Aku - Dolní", "Venkovní"};
+
+    for (int i = 0; i < 7; i++) {
+      if (memcmp(addr, znamaCidla[i], 8) == 0) {
+        name = jmenaCidel[i];
+        known = true;
+        break;
+      }
+    }
+
+    out += "<tr" + String(known ? "" : " class='new'") + ">";
+    out += "<td>" + String(count) + "</td>";
+    out += "<td>0x" + hexAddr + "</td>";
+    out += "<td" + String(known ? " class='known'" : "") + ">" + name + "</td>";
+    out += "</tr>";
   }
-  out += "</pre>"; // Ukončení bloku
-  server.send(200, "text/html", out); // Odeslání výsledku
+
+  if (count == 0) {
+    out += "<tr><td colspan='3'>Žádná čidla nebyla nalezena! Zkontrolujte zapojení.</td></tr>";
+  }
+
+  out += "</table><p>Celkem nalezeno čidel: " + String(count) + "</p>";
+  out += "<a href='/' class='btn'>← Zpět na Dashboard</a></body></html>";
+  
+  server.send(200, "text/html", out);
 }
 
 // Funkce pro zobrazení stránky s tabulkou záznamů
