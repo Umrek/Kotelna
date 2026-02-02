@@ -88,17 +88,18 @@ const float spalinyOffset = 0.0; // Hodnota korekce pro termočlánek (např. -8
 struct SensorConfig {
   DeviceAddress adr;
   String name;
+  float offset; // Přidáme sloupec pro korekci
 };
 
-// Mapování čidel podle tvého zadání
+// Mapování s přidanou korekcí (offset)
 SensorConfig mojeCidla[] = {
-  {{ 0x28, 0x40, 0x43, 0x0c, 0x50, 0x25, 0x06, 0x46 }, "Vstup kotle"},   // S1
-  {{ 0x28, 0xcc, 0xf7, 0x88, 0x43, 0x25, 0x06, 0xf8 }, "Výstup kotle"},  // S2
-  {{ 0x28, 0xda, 0x01, 0xf4, 0x43, 0x25, 0x06, 0x91 }, "Aku - Horní"},   // S3
-  {{ 0x28, 0x66, 0x58, 0xfa, 0x42, 0x25, 0x06, 0x33 }, "Aku - Střed 1"}, // S4
-  {{ 0x28, 0x76, 0x9f, 0xbc, 0x43, 0x25, 0x06, 0x59 }, "Aku - Střed 2"}, // S5
-  {{ 0x28, 0x15, 0x0e, 0xe4, 0x43, 0x25, 0x06, 0x7d }, "Aku - Dolní"},   // S6
-  {{ 0x28, 0xbb, 0x8a, 0x10, 0x43, 0x25, 0x06, 0x99 }, "Venkovní"}       // S7
+  {{ 0x28, 0x40, 0x43, 0x0c, 0x50, 0x25, 0x06, 0x46 }, "Vstup kotle",  0.0}, // S1
+  {{ 0x28, 0xcc, 0xf7, 0x88, 0x43, 0x25, 0x06, 0xf8 }, "Výstup kotle", 5.0}, // S2, korekce 5,0°C
+  {{ 0x28, 0xda, 0x01, 0xf4, 0x43, 0x25, 0x06, 0x91 }, "Aku - Horní",  0.0}, // S3
+  {{ 0x28, 0x66, 0x58, 0xfa, 0x42, 0x25, 0x06, 0x33 }, "Aku - Střed 1", 0.0}, // S4
+  {{ 0x28, 0x76, 0x9f, 0xbc, 0x43, 0x25, 0x06, 0x59 }, "Aku - Střed 2", 0.0}, // S5
+  {{ 0x28, 0x15, 0x0e, 0xe4, 0x43, 0x25, 0x06, 0x7d }, "Aku - Dolní",  0.0}, // S6
+  {{ 0x28, 0xbb, 0x8a, 0x10, 0x43, 0x25, 0x06, 0x99 }, "Venkovní",     0.0}  // S7
 };
 
 // --- GLOBÁLNÍ PROMĚNNÉ A OBJEKTY ---
@@ -182,9 +183,15 @@ void handleRoot() {
   // Načtení aktuálních teplot
   sensors.requestTemperatures(); // Požadavek na čtení teplot
   float t[7]; // Pole pro uložení teplot
-  for(int i=0; i<7; i++) { // Načtení teplot z čidel
-    t[i] = sensors.getTempC(mojeCidla[i].adr); // Načtení teploty z čidla
+  for(int i=0; i<7; i++) {
+  float rawTemp = sensors.getTempC(mojeCidla[i].adr);
+  // Pokud je čidlo odpojené, neaplikuj korekci, ať vidíme -127
+  if (rawTemp < -100) {
+    t[i] = rawTemp; 
+  } else {
+    t[i] = rawTemp + mojeCidla[i].offset; // Tady se přičte offset
   }
+}
   float spal = thermocouple.readCelsius() - spalinyOffset; // Korekce teploty spalin
 
   // Vytvoření HTML stránky
@@ -513,9 +520,16 @@ void loop() {
     lastLogTime = millis(); // Aktualizace času posledního logování
     sensors.requestTemperatures(); // Požadavek na čtení teplot
     float temps[7]; // Pole pro uložení teplot
-    for(int i=0; i<7; i++) { // Načtení teplot z čidel
-      temps[i] = sensors.getTempC(mojeCidla[i].adr); // Načtení teploty z čidla
+    for(int i=0; i<7; i++) {
+      float rawTemp = sensors.getTempC(mojeCidla[i].adr);
+      // Pokud je čidlo odpojené, neaplikuj korekci, ať vidíme -127
+      if (rawTemp < -100) {
+        temps[i] = rawTemp; 
+      } else {
+        temps[i] = rawTemp + mojeCidla[i].offset; // Tady se přičte offset
+      }
     }
+    
     logData(temps, thermocouple.readCelsius() - spalinyOffset); // Zápis dat do souboru s korekcí spalin
   }
 }
