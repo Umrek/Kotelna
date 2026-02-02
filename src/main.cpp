@@ -176,74 +176,87 @@ String getUptime() {
 void handleRoot() {
   // --- DASHBOARD STRÁNKA ---
   if (isWriting) { 
-    server.send(503, "text/plain", "Zapisuji data, zkuste to za vterinu."); // Pokud probíhá zápis, vrať 503
+    server.send(503, "text/plain", "Zapisuji data, zkuste to za vterinu.");
     return;
   }
 
-  // Načtení aktuálních teplot
-  sensors.requestTemperatures(); // Požadavek na čtení teplot
-  float t[7]; // Pole pro uložení teplot
+  // Načtení aktuálních teplot pro první vykreslení
+  sensors.requestTemperatures();
+  float t[7];
   for(int i=0; i<7; i++) {
-  float rawTemp = sensors.getTempC(mojeCidla[i].adr);
-  // Pokud je čidlo odpojené, neaplikuj korekci, ať vidíme -127
-  if (rawTemp < -100) {
-    t[i] = rawTemp; 
-  } else {
-    t[i] = rawTemp + mojeCidla[i].offset; // Tady se přičte offset
+    float rawTemp = sensors.getTempC(mojeCidla[i].adr);
+    if (rawTemp < -100) t[i] = rawTemp; 
+    else t[i] = rawTemp + mojeCidla[i].offset;
   }
-}
-  float spal = thermocouple.readCelsius() - spalinyOffset; // Korekce teploty spalin
+  float spal = thermocouple.readCelsius() - spalinyOffset;
 
   // Vytvoření HTML stránky
-  server.sendHeader("Cache-Control", "no-cache"); // Zabránit cachování
-  server.sendContent("<html><head><meta charset='UTF-8'><meta http-equiv='refresh' content='60'><meta name='viewport' content='width=device-width, initial-scale=1'>");
+  server.sendHeader("Cache-Control", "no-cache");
+  server.sendContent("<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'>");
   server.sendContent("<script src='https://cdn.jsdelivr.net/npm/chart.js'></script>");
-  server.sendContent("<style>body{font-family:sans-serif; text-align:center; background:#f0f2f5; padding:10px;} .box{background:white; padding:15px; margin:15px auto; border-radius:10px; max-width:900px; box-shadow:0 2px 4px rgba(0,0,0,0.1);} .chart-container{position:relative; height:350px; width:100%;} .progress{width:200px; background:#ddd; height:10px; border-radius:5px; margin:5px auto;} .bar{height:100%; border-radius:5px;}</style></head><body>");
+  server.sendContent("<style>body{font-family:sans-serif; text-align:center; background:#f0f2f5; padding:10px;} "
+                     ".box{background:white; padding:15px; margin:15px auto; border-radius:10px; max-width:900px; box-shadow:0 2px 4px rgba(0,0,0,0.1);} "
+                     ".chart-container{position:relative; height:350px; width:100%;} "
+                     ".progress{width:200px; background:#ddd; height:10px; border-radius:5px; margin:5px auto;} "
+                     ".bar{height:100%; border-radius:5px;} "
+                     "button{padding:6px 12px; margin:2px; cursor:pointer; background:#fff; border:1px solid #ccc; border-radius:4px;} "
+                     "button:hover{background:#eee;}</style></head><body>");
 
   server.sendContent("<h2>Kotelna - Dashboard</h2>");
 
-  // --- UKAZATEL PAMĚTI ---
+  // --- UKAZATEL PAMĚTI A DOBY PROVOZU ---
   size_t total = LittleFS.totalBytes();
   size_t used = LittleFS.usedBytes();
   float per = (float)used / total * 100.0;
-  server.sendContent("<div style='font-size: 0.8em; color: #666;'>Využití paměti: <b>" + String(per, 1) + "%</b></div>");
-  server.sendContent("<div class='progress'><div class='bar' style='width:"+String(per)+"%; background:"+(per>80?"red":"#28a745")+";'></div></div>");
-  // --- UKAZATEL DOBY PROVOZU ---
-  server.sendContent("<div style='font-size: 0.9em; color: #666; margin-top:10px;'>Systém běží: <b>" + getUptime() + "</b></div>");
+  server.sendContent("<div style='font-size: 0.8em; color: #666;'>Využití paměti: <b id='memPerc'>" + String(per, 1) + "%</b></div>");
+  server.sendContent("<div class='progress'><div class='bar' id='memBar' style='width:"+String(per)+"%; background:"+(per>80?"red":"#28a745")+";'></div></div>");
+  server.sendContent("<div style='font-size: 0.9em; color: #666; margin-top:10px;'>Systém běží: <b id='uptimeDisp'>" + getUptime() + "</b></div>");
+
+  // --- OVLÁDACÍ PRVKY PRO ROZSAH ---
+  server.sendContent(
+    "<div class='box' style='padding:10px;'>"
+    "<b>Rozsah grafů:</b> "
+    "<button onclick='setRange(36, this)'>6h</button> "
+    "<button onclick='setRange(72, this)'>12h</button> "
+    "<button onclick='setRange(108, this)'>18h</button> "
+    "<button onclick='setRange(144, this)'>24h</button> "
+    "<button onclick='setRange(180, this)'>30h</button> "
+    "<button onclick='setRange(216, this)'>36h</button> "
+    "<button onclick='setRange(252, this)'>42h</button> "
+    "<button id='btnDefault' style='background:#ddd' onclick='setRange(288, this)'>Vše (48h)</button>"
+    "</div>"
+  );
 
   // SEKCÍ 1: KOTEL A SPALINY
   server.sendContent("<div class='box'><h3>1. Teplota Kotle a Spalin</h3>"
                      "<div style='display:flex; justify-content:center; flex-wrap:wrap; margin-bottom:15px;'>"
-                     "<div>Vstup: <b>"+String(t[0],1)+"°C</b></div><div style='margin:0 15px;'>Výstup: <b>"+String(t[1],1)+"°C</b></div>"
-                     "<div style='color:red;'>Spaliny: <b>"+String(spal,0)+"°C</b></div></div>"
+                     "<div>Vstup: <b id='temp0'>"+String(t[0],1)+"°C</b></div><div style='margin:0 15px;'>Výstup: <b id='temp1'>"+String(t[1],1)+"°C</b></div>"
+                     "<div style='color:red;'>Spaliny: <b id='tempSpal'>"+String(spal,0)+"°C</b></div></div>"
                      "<div class='chart-container'><canvas id='chartKotel'></canvas></div></div>");
 
   // SEKCE 2: AKUMULACE
   server.sendContent("<div class='box'><h3>2. Akumulační nádrže</h3>"
-                     // Tento kontejner (flex) zajistí zobrazení v jednom řádku
                      "<div style='display:flex; justify-content:center; flex-wrap:wrap; gap:15px; margin-bottom:15px;'>"
-                       "<div>Horní: <b>"+String(t[2],1)+"°C</b></div>"
-                       "<div>Střed 1: <b>"+String(t[3],1)+"°C</b></div>"
-                       "<div>Střed 2: <b>"+String(t[4],1)+"°C</b></div>"
-                       "<div>Spodek: <b>"+String(t[5],1)+"°C</b></div>"
+                       "<div>Horní: <b id='temp2'>"+String(t[2],1)+"°C</b></div>"
+                       "<div>Střed 1: <b id='temp3'>"+String(t[3],1)+"°C</b></div>"
+                       "<div>Střed 2: <b id='temp4'>"+String(t[4],1)+"°C</b></div>"
+                       "<div>Spodek: <b id='temp5'>"+String(t[5],1)+"°C</b></div>"
                      "</div>"
                      "<div class='chart-container'><canvas id='chartAku'></canvas></div></div>");
 
   // SEKCE 3: VENKOVNÍ TEPLOTA
   server.sendContent("<div class='box'><h3>3. Venkovní teplota</h3>"
-                     "<div style='margin-bottom:10px;'>Aktuálně venku: <b>"+String(t[6],1)+"°C</b></div>"
+                     "<div style='margin-bottom:10px;'>Aktuálně venku: <b id='temp6'>"+String(t[6],1)+"°C</b></div>"
                      "<div class='chart-container'><canvas id='chartVenku'></canvas></div></div>");
 
-  // --- JAVASCRIPT: SPOJENÍ SOUBORŮ ---
-  server.sendContent("<script>var rawData = ["); // Začátek pole pro data
-  // Funkce pro streamování dat ze souboru do JavaScriptu
+  // --- JAVASCRIPT ---
+  server.sendContent("<script>var rawData = [");
   auto streamFileToJS = [&](const char* path) {
     File f = LittleFS.open(path, FILE_READ);
     if (f) {
       int lineCount = 0;
       while(f.available()) {
         String line = f.readStringUntil('\n'); line.trim();
-        // Změna: Bereme každý 10. řádek (při minutovém logování = 10min interval v grafu)
         if (line.length() > 5 && lineCount++ % 10 == 0) {
           if (line.startsWith("\"")) server.sendContent("[" + line + "],");
           else {
@@ -255,67 +268,70 @@ void handleRoot() {
       f.close();
     }
   };
+  streamFileToJS(oldFilename);
+  streamFileToJS(filename);
 
-  streamFileToJS(oldFilename); // Prvně stará data
-  streamFileToJS(filename);    // Pak nová data
+  server.sendContent("]; var currentRange = 288;");
+  server.sendContent("var labels = rawData.map(r => r[0]);");
 
-  // Omezení na posledních 288 bodů (2 dny při 10min rozlišení)
-  server.sendContent("]; if(rawData.length > 288) rawData = rawData.slice(-288);"); // Omezení dat na posledních 288 záznamů
-  server.sendContent("var labels = rawData.map(r => r[0]);"); // Vytvoření popisků z časových značek
-
-  // Funkce pro zjednodušení tvorby grafů
-  server.sendContent( // JavaScript funkce pro vykreslení grafu
-    "function drawGraph(id, datasets) {" // Funkce pro vykreslení grafu
-    "  new Chart(document.getElementById(id), {" // Vytvoření nového grafu
-    "    type: 'line', data: {labels: labels, datasets: datasets}," // Data grafu
-    "    options: { responsive: true, maintainAspectRatio: false, " // Možnosti grafu
-    "    scales: { y: { ticks: { stepSize: 5 } } }, " // Nastavení osy Y
-    "    plugins: { legend: { position: 'bottom' } }, elements: { point: { radius: 0 } } }" // Další možnosti grafu
+  // Definice funkcí grafů
+  server.sendContent(
+    "var cKotel, cAku, cVenku;"
+    "function drawGraph(id, datasets) {"
+    "  return new Chart(document.getElementById(id), {"
+    "    type: 'line', data: {labels: labels.slice(-currentRange), datasets: datasets.map(ds => ({...ds, data: ds.data.slice(-currentRange)}))},"
+    "    options: { responsive: true, maintainAspectRatio: false, "
+    "      scales: { y: { ticks: { stepSize: 5 } }, x: { ticks: { callback: function(val, idx) { let lbl = this.getLabelForValue(val); return idx % 2 === 0 ? lbl : ''; }, maxRotation: 0, autoSkip: true } } },"
+    "      plugins: { legend: { position: 'bottom' } }, elements: { point: { radius: 0 }, line: { tension: 0.2 } } }"
     "  });"
+    "}"
+    "function setRange(p, btn) {"
+    "  currentRange = p;"
+    "  var btns = btn.parentNode.getElementsByTagName('button');"
+    "  for(var i=0; i<btns.length; i++) btns[i].style.background = '#fff';"
+    "  btn.style.background = '#ddd';"
+    "  refreshCharts();"
+    "}"
+    "function refreshCharts() {"
+    "  let lbls = rawData.map(r => r[0]).slice(-currentRange);"
+    "  const up = (c, idxs) => {"
+    "    c.data.labels = lbls;"
+    "    c.data.datasets.forEach((ds, i) => { ds.data = rawData.map(r => r[idxs[i]]).slice(-currentRange); });"
+    "    c.update('none');"
+    "  };"
+    "  up(cKotel, [1, 2, 8]); up(cAku, [3, 4, 5, 6]); up(cVenku, [7]);"
     "}"
   );
 
-  // GRAF 1: KOTEL (S1, S2) + SPALINY (r[8])
-  server.sendContent(
-    "drawGraph('chartKotel', ["
-    "  {label:'Vstup kotle', borderColor:'blue', data: rawData.map(r => r[1])},"
-    "  {label:'Výstup kotle', borderColor:'orange', data: rawData.map(r => r[2])},"
-    "  {label:'Spaliny', borderColor:'red', data: rawData.map(r => r[8])}"
-    "]);"
-  );
+  // Inicializace grafů
+  server.sendContent("cKotel = drawGraph('chartKotel', [{label:'Vstup',borderColor:'blue',data:rawData.map(r=>r[1])},{label:'Výstup',borderColor:'orange',data:rawData.map(r=>r[2])},{label:'Spaliny',borderColor:'red',data:rawData.map(r=>r[8])}]);");
+  server.sendContent("cAku = drawGraph('chartAku', [{label:'Horní',borderColor:'darkred',data:rawData.map(r=>r[3])},{label:'Střed 1',borderColor:'red',data:rawData.map(r=>r[4])},{label:'Střed 2',borderColor:'orange',data:rawData.map(r=>r[5])},{label:'Dolní',borderColor:'blue',data:rawData.map(r=>r[6])}]);");
+  server.sendContent("cVenku = drawGraph('chartVenku', [{label:'Venkovní',borderColor:'green',data:rawData.map(r=>r[7])}]);");
 
-  // GRAF 2: AKUMULACE (S3, S4, S5, S6)
+  // AJAX Update
   server.sendContent(
-    "drawGraph('chartAku', ["
-    "  {label:'Aku - Horní', borderColor:'darkred', data: rawData.map(r => r[3])},"
-    "  {label:'Aku - Střed 1', borderColor:'red', data: rawData.map(r => r[4])},"
-    "  {label:'Aku - Střed 2', borderColor:'orange', data: rawData.map(r => r[5])},"
-    "  {label:'Aku - Dolní', borderColor:'blue', data: rawData.map(r => r[6])}"
-    "]);"
-  );
-
-  // GRAF 3: VENKOV (S7)
-  server.sendContent(
-    "drawGraph('chartVenku', ["
-    "  {label:'Venkovní teplota', borderColor:'green', data: rawData.map(r => r[7])}"
-    "]);"
+    "async function updateDashboard() {"
+    "  try {"
+    "    const res = await fetch('/api/data'); const d = await res.json();"
+    "    document.getElementById('uptimeDisp').innerText = d.uptime;"
+    "    d.t.forEach((val, i) => { document.getElementById('temp'+i).innerText = val.toFixed(1)+'°C'; });"
+    "    document.getElementById('tempSpal').innerText = d.spal.toFixed(0)+'°C';"
+    "    let now = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});"
+    "    rawData.push([now, ...d.t, d.spal]); if(rawData.length > 500) rawData.shift();"
+    "  } catch(e) { console.log('Update failed'); }"
+    "}"
+    "setInterval(updateDashboard, 60000);" 
+    "setInterval(refreshCharts, 600000);"
   );
   server.sendContent("</script>");
 
-  // SEKCE 4: Tlačítka pod grafy
-  server.sendContent("<div style='margin: 30px 0;'>");
-  // Tlačítko pro tabulku (zelené)
-  server.sendContent("<a href='/list_page' style='display:inline-block; padding:10px 20px; background:#28a745; color:white; text-decoration:none; border-radius:5px; margin:5px;'>Zobrazit tabulku záznamů</a>");
-  // Tlačítko pro skenování čidel (šedé)
-  server.sendContent("<a href='/scan' style='display:inline-block; padding:10px 20px; background:#6c757d; color:white; text-decoration:none; border-radius:5px; margin:5px;'>Skenovat čidla</a><br>");
-  // Tlačítko pro čistý restart (modré)
-  server.sendContent("<a href='/restart' onclick='return confirm(\"Opravdu restartovat ESP bez mazani dat?\")' style='display:inline-block; padding:8px 15px; background:#007bff; color:white; text-decoration:none; border-radius:5px; margin:20px 5px 5px 5px; font-size: 0.9em;'>Restartovat ESP</a>");
-  server.sendContent("<br><br>");
-  // Tlačítko pro smazání (červené, menší)
-  server.sendContent("<a href='/delete' onclick='return confirm(\"POZOR: Opravdu smazat celou historii?\")' style='color:red; font-size: 0.8em; text-decoration:none; border:1px solid red; padding:5px 10px; border-radius:5px;'>Smazat data a restartovat</a>");
-  server.sendContent("</div>");
-
-  server.sendContent("</body></html>");
+  // Tlačítka pod čarou
+  server.sendContent("<div style='margin: 30px 0;'>"
+                     "<a href='/list_page' style='display:inline-block; padding:10px 20px; background:#28a745; color:white; text-decoration:none; border-radius:5px; margin:5px;'>Zobrazit tabulku záznamů</a>"
+                     "<a href='/scan' style='display:inline-block; padding:10px 20px; background:#6c757d; color:white; text-decoration:none; border-radius:5px; margin:5px;'>Skenovat čidla</a><br>"
+                     "<a href='/restart' onclick='return confirm(\"Opravdu restartovat?\")' style='display:inline-block; padding:8px 15px; background:#007bff; color:white; text-decoration:none; border-radius:5px; margin:20px 5px 5px 5px; font-size: 0.9em;'>Restartovat ESP</a><br><br>"
+                     "<a href='/delete' onclick='return confirm(\"Smazat historii?\")' style='color:red; font-size: 0.8em; text-decoration:none; border:1px solid red; padding:5px 10px; border-radius:5px;'>Smazat data a restartovat</a>"
+                     "</div></body></html>");
 }
 
 // Funkce pro skenování čidel
@@ -504,6 +520,23 @@ void setup() {
     server.send(200, "text/html", html); // Odeslání stránky
     delay(1000); // Krátká pauza před restartem
     ESP.restart(); // Restart ESP
+  });
+  server.on("/api/data", []() {
+    sensors.requestTemperatures();
+    float t[7];
+    for(int i=0; i<7; i++) {
+      float raw = sensors.getTempC(mojeCidla[i].adr);
+      t[i] = (raw < -100) ? raw : raw + mojeCidla[i].offset;
+    }
+    float spal = thermocouple.readCelsius() - spalinyOffset;
+    
+    String json = "{";
+    json += "\"t\":[";
+    for(int i=0; i<7; i++) { json += String(t[i], 1) + (i<6?",":""); }
+    json += "], \"spal\":" + String(spal, 1);
+    json += ", \"uptime\":\"" + getUptime() + "\"";
+    json += "}";
+    server.send(200, "application/json", json);
   });
   server.on("/list_page", handleListPage); // Stránka s tabulkou záznamů
 
