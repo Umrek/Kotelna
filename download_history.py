@@ -1,44 +1,70 @@
-import requests
 import os
+import sys
+import subprocess
+try:
+    import requests
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
+    import requests
+from datetime import datetime
+import shutil
 
-# Konfigurace
-ESP_IP = "http://192.168.2.9"  # Doplň svou IP
-TARGET_FOLDER = "data"
-TARGET_FILE = "history.csv"
 
-def download_and_save_history():
-    # 1. Vytvoření složky 'data', pokud neexistuje
-    if not os.path.exists(TARGET_FOLDER):
-        os.makedirs(TARGET_FOLDER)
-        print(f"Vytvořena složka: {TARGET_FOLDER}")
+# --- LOGIKA STAHOVÁNÍ ---
+def download_logic():
+    ESP_IP = "http://192.168.2.9"
+    DATA_FOLDER = "data"
+    BACKUP_FOLDER = "backups"
+    FILENAME = "history.csv"
 
-    url = f"{ESP_IP}/api/history"
-    full_path = os.path.join(TARGET_FOLDER, TARGET_FILE)
+    # Vytvoření složek
+    for folder in [DATA_FOLDER, BACKUP_FOLDER]:
+        if not os.path.exists(folder):
+            os.makedirs(folder)
 
+    current_file_path = os.path.join(DATA_FOLDER, FILENAME)
+    
+    # 1. Přesun starého souboru do backups
+    if os.path.exists(current_file_path):
+        timestamp = datetime.now().strftime("%y%m%d%H%M")
+        archive_name = f"history_{timestamp}.csv"
+        archive_path = os.path.join(BACKUP_FOLDER, archive_name)
+        try:
+            shutil.move(current_file_path, archive_path)
+            print(f"--> [PYTHON] Archivováno do {archive_path}")
+        except Exception as e:
+            print(f"--> [PYTHON] Chyba archivace: {e}")
+
+    # 2. Stažení nových dat z ESP
     try:
-        print(f"Stahuji data z {url}...")
-        response = requests.get(url, timeout=20)
-        
-        if response.status_code == 200:
-            raw_data = response.text
-            
-            if raw_data == "no_data":
-                print("ESP32 nemá žádná data k odeslání.")
-                return
-
-            # 2. Uložení dat do souboru
-            # Používáme kódování utf-8 a mód 'w' (přepsat) nebo 'a' (přidat)
-            with open(full_path, "w", encoding="utf-8", newline='') as f:
-                f.write(raw_data)
-            
-            print(f"Úspěch! Data uložena do: {full_path}")
-            print(f"Velikost souboru: {os.path.getsize(full_path)} bajtů")
-            
+        print(f"--> [PYTHON] Pokus o stažení dat z {ESP_IP}...")
+        r = requests.get(f"{ESP_IP}/api/history", timeout=10)
+        if r.status_code == 200:
+            if r.text == "no_data":
+                print("--> [PYTHON] ESP32 hlásí: Žádná data k dispozici.")
+            else:
+                with open(current_file_path, "w", encoding="utf-8", newline='') as f:
+                    f.write(r.text)
+                print(f"--> [PYTHON] Nová historie stažena do {current_file_path}")
         else:
-            print(f"Chyba serveru: {response.status_code}")
-
+            print(f"--> [PYTHON] ESP32 vrátilo chybu HTTP: {r.status_code}")
     except Exception as e:
-        print(f"Nastala chyba: {e}")
+        print(f"--> [PYTHON] ESP32 nedostupné (asi je offline): {e}")
 
-if __name__ == "__main__":
-    download_and_save_history()
+# --- INTEGRACE DO PLATFORMIO ---
+try:
+    from SCons.Script import Import
+    Import("env")
+
+    # Definujeme funkci s argumenty, které PlatformIO vyžaduje
+    def pio_callback(source, target, env):
+        download_logic()
+
+    # Navážeme na akci uploadfs
+    env.AddPreAction("uploadfs", pio_callback)
+    print("[PIO-SCRIPT] Skript úspěšně zaregistrován pro akci uploadfs.")
+
+except Exception:
+    # Pokud skript pouštíš ručně (mimo PIO)
+    if __name__ == "__main__":
+        download_logic()
