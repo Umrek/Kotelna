@@ -233,9 +233,9 @@ void setup() {
   // Nastavení času přes NTP
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   
-  // Nastavení webových stránek
-  server.on("/", handleRoot);
-  server.on("/scan", handleScan);
+  // Nastavení webových stránek a API endpointů
+  server.on("/", handleRoot); // Hlavní stránka s grafy
+  server.on("/scan", handleScan); // Stránka pro skenování čidel
   server.on("/list_page", handleListPage); // Stránka s kompletní historií v tabulce
 
   server.on("/delete", []() { // Stránka pro smazání historie a restart
@@ -292,34 +292,36 @@ void setup() {
   });
   // API endpoint pro získání kompletní historie ve formátu CSV
   server.on("/api/history", []() {
-      if (isWriting) { server.send(503, "text/plain", "Zapisuji..."); return; }
-      
-      // Zjistíme celkovou velikost souborů, abychom Stringu rezervovali paměť naráz
-      size_t totalSize = 0;
-      if (LittleFS.exists(oldFilename)) { File f = LittleFS.open(oldFilename, "r"); totalSize += f.size(); f.close(); }
-      if (LittleFS.exists(filename)) { File f = LittleFS.open(filename, "r"); totalSize += f.size(); f.close(); }
+    if (isWriting) { server.send(503, "text/plain", "Zapisuji..."); return; }
+    
+    // Zablokujeme zápis po dobu odesílání
+    isWriting = true;
 
-      if (totalSize == 0) {
-          server.send(200, "text/plain", "no_data");
-          return;
-      }
+    // Klíčová změna: Explicitně řekneme, že posíláme text s UTF-8
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "text/plain; charset=utf-8", "");
 
-      String output;
-      output.reserve(totalSize + 100); // Rezervujeme paměť dopředu - zabráníme pádům
+    // Pomocná funkce pro bezpečné odeslání souboru po kouscích
+    auto sendFile = [](String path) {
+        if (LittleFS.exists(path)) {
+            File f = LittleFS.open(path, "r");
+            if (f) {
+                // Posíláme po 1KB kouscích - šetrné k RAM i WiFi
+                uint8_t buffer[1024];
+                while (f.available()) {
+                    size_t bytesRead = f.read(buffer, sizeof(buffer));
+                    server.sendContent((char*)buffer, bytesRead);
+                }
+                f.close();
+            }
+        }
+    };
 
-      if (LittleFS.exists(oldFilename)) {
-          File fOld = LittleFS.open(oldFilename, "r");
-          output += fOld.readString(); // Přečte celý soubor naráz (mnohem rychlejší)
-          fOld.close();
-      }
-      
-      if (LittleFS.exists(filename)) {
-          File f = LittleFS.open(filename, "r");
-          output += f.readString();
-          f.close();
-      }
+    sendFile(oldFilename);
+    sendFile(filename);
 
-      server.send(200, "text/plain", output);
+    server.sendContent(""); // Ukončení přenosu
+    isWriting = false;
   });
   // API endpoint pro skenování čidel (vratí seznam adres v JSONu)
   server.on("/api/scan", []() {
