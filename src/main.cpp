@@ -278,16 +278,20 @@ void setup() {
     }
     float spal = thermocouple.readCelsius() - spalinyOffset;
     
-    // Získání síly WiFi signálu
+    // Získání diagnostických údajů
     int rssi = WiFi.RSSI(); 
+    uint32_t freeHeap = ESP.getFreeHeap(); // Získání volné RAM
 
+    // Ruční skládání JSONu
     String json = "{";
     json += "\"t\":[";
     for(int i=0; i<7; i++) { json += String(t[i], 1) + (i<6?",":""); }
     json += "], \"spal\":" + String(spal, 1);
     json += ", \"uptime\":\"" + getUptime() + "\"";
-    json += ", \"rssi\":" + String(rssi); // Přidáno sem
+    json += ", \"rssi\":" + String(rssi);
+    json += ", \"free_heap\":" + String(freeHeap); // Přidáno sem jako číslo
     json += "}";
+    
     server.send(200, "application/json", json);
   });
   // API endpoint pro získání kompletní historie ve formátu CSV

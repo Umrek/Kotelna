@@ -9,12 +9,31 @@
         body{font-family:sans-serif; text-align:center; background:#f0f2f5; padding:10px;}
         .box{background:white; padding:15px; margin:15px auto; border-radius:10px; max-width:900px; box-shadow:0 2px 4px rgba(0,0,0,0.1);}
         .chart-container{position:relative; height:350px; width:100%;}
-        .progress{width:200px; background:#ddd; height:10px; border-radius:5px; margin:5px auto;}
-        .bar{height:100%; border-radius:5px;}
         button{padding:6px 12px; margin:2px; cursor:pointer; background:#fff; border:1px solid #ccc; border-radius:4px;}
         button:hover{background:#eee;}
         .temp-val{font-weight:bold;}
         .spaliny{color:red;}
+        #lastUpdateDisp{font-weight: bold;}
+        /* Styl pro kontejner lišty */
+        .progress {
+            width: 100px;
+            background: #eee;
+            height: 12px;
+            border-radius: 6px;
+            display: inline-block;
+            vertical-align: middle;
+            margin: 0 5px;
+            border: 1px solid #ccc;
+            overflow: hidden; /* Aby vnitřní bar nepřetékal přes zaoblení */
+        }
+
+        /* Styl pro vnitřní barevnou část */
+        .bar {
+            height: 100%;
+            width: 0%; /* Začíná na nule, JS ji natáhne */
+            background: #4caf50;
+            transition: width 0.5s ease-in-out; /* Plynulý pohyb */
+        }
     </style>
 </head>
 <body>
@@ -23,17 +42,23 @@
     <div class="box">
         <div style="display: flex; justify-content: space-around; align-items: center; flex-wrap: wrap; gap: 15px;">        
             <span>Uptime: <span id="uptimeDisp">-d --:--:--</span></span>  
+            <span>
+                RAM: <b id="heapDisp">---</b> kB 
+                <div class="progress">
+                    <div id="heapBar" class="bar"></div>
+                </div>
+            </span>
             <span>WiFi: <b id="rssiDisp">---</b> dBm <span id="wifiQual"></span></span>
-            <span style="font-weight: bold;">Poslední update: <span id="lastUpdateDisp" style="color: blue;">--:--:--</span></span>
+            <span>Poslední update: <span id="lastUpdateDisp" style="color: blue;">--:--:--</span></span>
         </div>
     </div>
 
-    <div class="box">
+    <div class="box">   
         <b>Rozsah grafů:</b>
-        <button onclick="setRange(36, this)">6h</button>
-        <button id="btnDefault" style="background:#ddd" onclick="setRange(72, this)">12h</button>
-        <button onclick="setRange(144, this)">24h</button>
-        <button onclick="setRange(288, this)">48h</button>
+        <button onclick="setRange(360, this)">6h</button>
+        <button id="btnDefault" style="background:#ddd" onclick="setRange(720, this)">12h</button>
+        <button onclick="setRange(1440, this)">24h</button>
+        <button onclick="setRange(2880, this)">48h</button>
     </div>
 
     <div class="box">
@@ -73,275 +98,196 @@
             <button onclick="if(confirm('Opravdu restartovat?')) location.href='/restart'" style="background:#fff3e0; border-color:#ff9800;">🔄 Restartovat ESP</button>
             <button onclick="handleDelete()" style="background:#ffebee; border-color:#f44336; color:red; font-weight:bold;">🗑 Smazat historii!</button>
         </div>
-
-        <div id="errorLogTable" style="margin-top:20px; font-family:monospace; font-size:0.85em; display:none; background:white; border:1px solid #ffcccc; padding:10px; border-radius:5px; text-align:left; max-height:300px; overflow-y:auto;">
-        </div>
+        <div id="errorLogTable" style="margin-top:20px; font-family:monospace; font-size:0.85em; display:none; background:white; border:1px solid #ffcccc; padding:10px; border-radius:5px; text-align:left; max-height:300px; overflow-y:auto;"></div>
     </div>
 
     <script>
+        // --- GLOBÁLNÍ KONFIGURACE ---
         var rawData = [];
-        var currentRange = 72; // Výchozí zobrazení 12 hodin (72 záznamů po 10 minutách)
+        var currentRange = 720; // Výchozí rozsah v minutách (12h)
+        var graphStep = 10;     // Proředění: vzít každou 10. minutu pro graf
+        
         var cKotel = null, cAku = null, cVenku = null;
 
-        // HLAVNÍ SPOUŠTĚČ PO NAČTENÍ STRÁNKY
         window.onload = async function() {
-            console.log("Stránka načtena, inicializuji...");
-            initCharts();        // 1. Vytvoří prázdné grafy (bílá plátna)
-            await loadHistory(); // 2. Počká na stažení dat z ESP32
-            refreshCharts();     // 3. Vloží stažená data do grafů
-            updateDashboard();   // 4. Načte aktuální teploty a spustí smyčku
-            setInterval(updateDashboard, 60000);
+            initCharts();
+            await loadHistory(); 
+            refreshCharts();
+            updateDashboard();
+            setInterval(updateDashboard, 60000); // Live update každou minutu
         };
 
         async function loadHistory() {
             try {
-                console.log("Stahuji historii...");
                 const res = await fetch('/api/history');
                 const text = await res.text();
-                
-                if (!text || text === "no_data") {
-                    console.log("Historie je prázdná.");
-                    return;
-                }
+                if (!text || text === "no_data") return;
 
                 const lines = text.trim().split('\n');
                 rawData = lines.map(line => {
                     return line.replace(/"/g, '').split(',').map(s => s.trim());
                 }).filter(p => p.length >= 8);
-
-                console.log("Úspěšně zpracováno řádků: " + rawData.length);
-            } catch (e) { 
-                console.error('Chyba při loadHistory:', e); 
-            }
+                console.log("Historie načtena: " + rawData.length + " řádků");
+            } catch (e) { console.error('Chyba loadHistory:', e); }
         }
 
         async function updateDashboard() {
             try {
                 const res = await fetch('/api/data');
-                if (!res.ok) throw new Error("Server neodpovídá");
                 const d = await res.json();
 
-                // Čas aktualizace
+                // Čas a vizuální update
                 const ted = new Date();
-                const casString = ted.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
                 const lastUpEl = document.getElementById('lastUpdateDisp');
-                lastUpEl.innerText = casString;
-                
-                // Vizuální zpětná vazba
+                lastUpEl.innerText = ted.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
                 lastUpEl.style.color = "green";
                 setTimeout(() => { lastUpEl.style.color = "blue"; }, 500);
 
-                // UPTIME a RSSI - přidána kontrola existence
                 if (d.uptime) document.getElementById('uptimeDisp').innerText = d.uptime;
                 
                 if (d.rssi !== undefined) {
-                    const rssi = d.rssi;
                     const rssiEl = document.getElementById('rssiDisp');
-                    const qualEl = document.getElementById('wifiQual');
-                    rssiEl.innerText = rssi;
-                    
-                    if (rssi > -60) { qualEl.innerText = "🟢 Výborný"; rssiEl.style.color = "green"; }
-                    else if (rssi > -75) { qualEl.innerText = "🟡 Dobrý"; rssiEl.style.color = "orange"; }
-                    else { qualEl.innerText = "🔴 Slabý"; rssiEl.style.color = "red"; }
+                    rssiEl.innerText = d.rssi;
+                    document.getElementById('wifiQual').innerText = d.rssi > -60 ? "🟢 Výborný" : (d.rssi > -75 ? "🟡 Dobrý" : "🔴 Slabý");
                 }
 
-                // Teploty S1-S7
-                if (d.t && Array.isArray(d.t)) {
-                    d.t.forEach((val, i) => { 
+                if (d.t) {
+                    d.t.forEach((val, i) => {
                         const el = document.getElementById('temp' + i);
                         if(el) el.innerText = (val < -50) ? "CHYBA" : val.toFixed(1);
                     });
                 }
-                
-                // Spaliny
-                if (d.spal !== undefined) {
-                    document.getElementById('tempSpal').innerText = d.spal.toFixed(0);
-                }
+                if (d.spal !== undefined) document.getElementById('tempSpal').innerText = d.spal.toFixed(0);
 
-                // Přidání do grafu (jen pokud máme všechna data)
+                // Přidání živého bodu do paměti a refresh grafu
                 if (d.t && d.spal !== undefined) {
                     let nowCas = ted.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
                     rawData.push([nowCas, ...d.t.map(v => v.toString()), d.spal.toString()]);
-                    if(rawData.length > 3000) rawData.shift();
+                    if(rawData.length > 4000) rawData.shift(); 
                     refreshCharts();
                 }
 
-            } catch(e) { 
-                console.error('Update selhal:', e); 
-                document.getElementById('lastUpdateDisp').innerText = "CHYBA SPOJENÍ";
-                document.getElementById('lastUpdateDisp').style.color = "red";
-            }
+                if (d.uptime) document.getElementById('uptimeDisp').innerText = d.uptime;
+
+                if (d.free_heap !== undefined) {
+                    const freeKb = Math.round(d.free_heap / 1024);
+                    document.getElementById('heapDisp').innerText = freeKb;
+                    
+                    // Výpočet procenta (předpokládáme cca 250kB jako max pro ESP32)
+                    const maxRam = 250; 
+                    let perc = Math.round((freeKb / maxRam) * 100);
+                    if (perc > 100) perc = 100;
+                    if (perc < 0) perc = 0;
+
+                    const bar = document.getElementById('heapBar');
+                    if (bar) {
+                        bar.style.width = perc + "%";
+                        // Barva podle zbývající paměti
+                        if (freeKb > 100) bar.style.background = "#4caf50";      // Zelená
+                        else if (freeKb > 50) bar.style.background = "#ff9800"; // Oranžová
+                        else bar.style.background = "#f44336";                 // Červená
+                    }
+                }
+            } catch(e) { console.error('Update selhal:', e); }
         }
 
         function initCharts() {
-            // Prevence chyby "Canvas is already in use"
-            if (cKotel) cKotel.destroy();
-            if (cAku) cAku.destroy();
-            if (cVenku) cVenku.destroy();
-
-            cKotel = drawGraph('chartKotel', [], [
-                {label:'Vstup', borderColor:'blue', data: []},
-                {label:'Výstup', borderColor:'orange', data: []},
-                {label:'Spaliny', borderColor:'red', data: []}
+            cKotel = drawGraph('chartKotel', [
+                {label:'Vstup', borderColor:'blue'}, {label:'Výstup', borderColor:'orange'}, {label:'Spaliny', borderColor:'red'}
             ]);
-            cAku = drawGraph('chartAku', [], [
-                {label:'Horní', borderColor:'darkred', data: []},
-                {label:'Střed 1', borderColor:'red', data: []},
-                {label:'Střed 2', borderColor:'orange', data: []},
-                {label:'Dolní', borderColor:'blue', data: []}
+            cAku = drawGraph('chartAku', [
+                {label:'Horní', borderColor:'darkred'}, {label:'Střed 1', borderColor:'red'}, {label:'Střed 2', borderColor:'orange'}, {label:'Dolní', borderColor:'blue'}
             ]);
-            cVenku = drawGraph('chartVenku', [], [
-                {label:'Venkovní', borderColor:'green', data: []}
-            ]);
+            cVenku = drawGraph('chartVenku', [{label:'Venkovní', borderColor:'green'}]);
         }
 
-        function drawGraph(id, labels, datasets) {
-            // Vytvoří nový graf s daným ID, prázdnými štítky a datasetemi. 
-            // Nastavení je optimalizováno pro rychlé načítání a přehlednost. 
-            // Animace jsou vypnuté, zobrazení je responzivní, a osy jsou nastaveny tak, aby zobrazovaly pouze každý 10. štítek pro lepší přehlednost. 
-            // Legenda je umístěna dole a zobrazuje pouze názvy bez ikon. 
-            // Body jsou skryté a křivky jsou zjemněné pro lepší vizuální dojem.
+        function drawGraph(id, datasets) {
             return new Chart(document.getElementById(id), {
                 type: 'line',
-                data: {labels: labels, datasets: datasets},
+                data: { labels: [], datasets: datasets.map(d => ({...d, data: [], borderWidth: 2})) },
                 options: {
-                    responsive: true, maintainAspectRatio: false,
-                    animation: false, // Vypneme animace pro rychlejší načítání
+                    responsive: true, maintainAspectRatio: false, animation: false,
+                    elements: { point: { radius: 0 }, line: { tension: 0.2 } },
                     scales: {
-                        y: { 
-                            ticks: { stepSize: 5 } // Nastaví krok na 5°C pro lepší čitelnost
-                        },
-                        x: {
-                            ticks: {
-                                // Automaticky vybere popisky tak, aby se nepřekrývaly
-                                autoSkip: true,
-                                maxTicksLimit: 12, // Maximálně 12 popisků na celou šířku (cca co hodina u 12h rozsahu)
-                                maxRotation: 0,
-                                minRotation: 0
-                            },
-                            grid: {
-                                display: false // Volitelné: vypne svislé čáry mřížky, graf bude čistší
-                            }
-                        }
+                        x: { ticks: { autoSkip: true, maxTicksLimit: 12, maxRotation: 0 } },
+                        y: { ticks: { stepSize: 5 } }
                     },
-                    // Legenda dole a bez zbytečných ikon
-                    plugins: { legend: { position: 'bottom' } },
-                    // Odstraníme body a zjemníme křivky
-                    elements: { point: { radius: 0 }, line: { tension: 0.2 } }
+                    plugins: { legend: { position: 'bottom' } }
                 }
             });
         }
 
         function refreshCharts() {
-            if(!cKotel || rawData.length === 0) return;
+            if(!cKotel || rawData.length === 0) {
+                console.log("Žádná data pro grafy!");
+                return;
+            }
             
-            const viewData = rawData.slice(-currentRange);
-            const lbls = viewData.map(r => r[0]);
+            // Ořízneme data na požadovaný počet minut
+            let viewData = rawData.slice(-currentRange);
+            console.log("Vykresluji bodů: " + viewData.length);
 
-            const up = (c, idxs) => {
-                c.data.labels = lbls;
-                
-                c.data.datasets.forEach((ds, i) => { 
-                    let lastValidValue = null; // Pomocná proměnná pro "Forward Fill"
-                    
+            // Proředění: aplikujeme ho, jen pokud máme víc dat, než je krok
+            if (viewData.length > graphStep) {
+                viewData = viewData.filter((_, index, arr) => {
+                    return (index % graphStep === 0) || (index === arr.length - 1);
+                });
+            }
+
+            const lbls = viewData.map(r => r[0]);
+            const updateSet = (chart, indices) => {
+                chart.data.labels = lbls;
+                chart.data.datasets.forEach((ds, i) => {
+                    let last = null;
                     ds.data = viewData.map(r => {
-                        let val = parseFloat(r[idxs[i]]);
-                        
-                        if (val > -50) {
-                            // Hodnota je v pořádku, uložíme ji jako poslední platnou
-                            lastValidValue = val;
-                            return val;
-                        } else {
-                            // Hodnota je chybná (-127), zkusíme použít tu předchozí
-                            // Pokud nemáme ani předchozí (chyba hned na začátku), vrátíme null
-                            return lastValidValue;
-                        }
+                        let v = parseFloat(r[indices[i]]);
+                        if (v > -50) { last = v; return v; }
+                        return last;
                     });
                 });
-                
-                c.update('none');
+                chart.update('none');
             };
 
-            up(cKotel, [1, 2, 8]);
-            up(cAku, [3, 4, 5, 6]);
-            up(cVenku, [7]);
+            updateSet(cKotel, [1, 2, 8]);
+            updateSet(cAku, [3, 4, 5, 6]);
+            updateSet(cVenku, [7]);
         }
 
-        function setRange(p, btn) {
-            currentRange = p;
-            // Zvýrazníme aktivní tlačítko
-            var btns = btn.parentNode.getElementsByTagName('button');
-            // Reset všech tlačítek
-            for(var i=0; i<btns.length; i++) btns[i].style.background = '#fff';
-            // Zvýrazníme aktuální
+        function setRange(min, btn) {
+            currentRange = min;
+            const btns = btn.parentNode.getElementsByTagName('button');
+            for(let b of btns) b.style.background = '#fff';
             btn.style.background = '#ddd';
-            // Obnovíme grafy s novým rozsahem
             refreshCharts();
         }
 
         function downloadHistory() {
-            const link = document.createElement("a");
-            link.href = "/api/history";
-            link.download = "history.csv";
-            link.click();
+            const a = document.createElement("a");
+            a.href = "/api/history"; a.download = "history.csv"; a.click();
         }
 
         function showErrorLogs() {
-            const tableDiv = document.getElementById('errorLogTable');
-            // Najdeme řádky, kde je některá hodnota (od indexu 1 do 7) menší než -50
-            const errorRows = rawData.filter(r => {
-                for(let i=1; i<=7; i++) {
-                    if(parseFloat(r[i]) < -50) return true;
-                }
+            const div = document.getElementById('errorLogTable');
+            const errs = rawData.filter(r => {
+                for(let i=1; i<=7; i++) if(parseFloat(r[i]) < -50) return true;
                 return false;
             });
-
-            if (errorRows.length === 0) {
-                alert("V načtené historii nejsou žádné chyby čidel.");
-                tableDiv.style.display = 'none';
-                return;
-            }
-
-            let html = "<strong>Nalezené chyby (celkem " + errorRows.length + "):</strong><br>";
-            html += "<table border='1' style='width:100%; border-collapse: collapse;'>";
-            errorRows.forEach(r => {
-                html += "<tr><td>" + r.join("</td><td>") + "</td></tr>";
-            });
-            html += "</table>";
-            
-            tableDiv.innerHTML = html;
-            tableDiv.style.display = 'block';
+            if (errs.length === 0) { alert("Žádné chyby."); div.style.display='none'; return; }
+            let h = "<strong>Chyby (" + errs.length + "):</strong><table border='1' style='width:100%; border-collapse:collapse;'>";
+            errs.slice(-50).forEach(r => h += "<tr><td>" + r.join("</td><td>") + "</td></tr>");
+            div.innerHTML = h + "</table>"; div.style.display = 'block';
         }
 
-        function handleDelete() {
-            if (confirm('VAROVÁNÍ: Veškerá historie bude smazána. Pokračovat?')) {
-                location.href = '/delete';
-            }
-        }
+        function handleDelete() { if(confirm('Smazat vše?')) location.href='/delete'; }
 
-        // Tikání uptime každou vteřinu na straně prohlížeče
-        setInterval(function() {
+        // Uptime ticker
+        setInterval(() => {
             let el = document.getElementById('uptimeDisp');
-            let text = el.innerText;
-            
-            // Rozpoznání formátu "1d 02:15:05" pomocí regulárního výrazu
-            let match = text.match(/(\d+)d\s+(\d+):(\d+):(\d+)/);
-            if (!match) return;
-
-            let d = parseInt(match[1]);
-            let h = parseInt(match[2]);
-            let m = parseInt(match[3]);
-            let s = parseInt(match[4]);
-
-            s++;
-            if (s >= 60) { s = 0; m++; }
-            if (m >= 60) { m = 0; h++; }
-            if (h >= 24) { h = 0; d++; }
-
-            el.innerText = d + "d " + 
-                String(h).padStart(2, '0') + ":" + 
-                String(m).padStart(2, '0') + ":" + 
-                String(s).padStart(2, '0');
+            let m = el.innerText.match(/(\d+)d\s+(\d+):(\d+):(\d+)/);
+            if (!m) return;
+            let d=parseInt(m[1]), h=parseInt(m[2]), min=parseInt(m[3]), s=parseInt(m[4]);
+            if (++s >= 60) { s=0; if (++min >= 60) { min=0; if (++h >= 24) { h=0; d++; } } }
+            el.innerText = d + "d " + String(h).padStart(2,'0') + ":" + String(min).padStart(2,'0') + ":" + String(s).padStart(2,'0');
         }, 1000);
     </script>
 </body>
