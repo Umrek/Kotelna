@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kotelna - Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body{font-family:sans-serif; text-align:center; background:#f0f2f5; padding:10px;}
+        .box{background:white; padding:15px; margin:15px auto; border-radius:10px; max-width:900px; box-shadow:0 2px 4px rgba(0,0,0,0.1);}
+        .chart-container{position:relative; height:350px; width:100%;}
+        .progress{width:200px; background:#ddd; height:10px; border-radius:5px; margin:5px auto;}
+        .bar{height:100%; border-radius:5px;}
+        button{padding:6px 12px; margin:2px; cursor:pointer; background:#fff; border:1px solid #ccc; border-radius:4px;}
+        button:hover{background:#eee;}
+        .temp-val{font-weight:bold;}
+        .spaliny{color:red;}
+    </style>
+</head>
+<body>
+    <h2>Kotelna - Dashboard</h2>
+    
+    <div class="box">
+        <div style="display: flex; justify-content: space-around; align-items: center; flex-wrap: wrap; gap: 15px;">        
+            <span>Uptime: <span id="uptimeDisp">-d --:--:--</span></span>  
+            <span>WiFi: <b id="rssiDisp">---</b> dBm <span id="wifiQual"></span></span>
+            <span style="font-weight: bold;">Poslední update: <span id="lastUpdateDisp" style="color: blue;">--:--:--</span></span>
+        </div>
+    </div>
+
+    <div class="box">
+        <b>Rozsah grafů:</b>
+        <button onclick="setRange(36, this)">6h</button>
+        <button id="btnDefault" style="background:#ddd" onclick="setRange(72, this)">12h</button>
+        <button onclick="setRange(144, this)">24h</button>
+        <button onclick="setRange(288, this)">48h</button>
+    </div>
+
+    <div class="box">
+        <h3>1. Teplota Kotle a Spalin</h3>
+        <div style="display:flex; justify-content:center; flex-wrap:wrap; gap:15px; margin-bottom:15px;">
+            <div>Vstup: <span id="temp0" class="temp-val">--</span>°C</div>
+            <div>Výstup: <span id="temp1" class="temp-val">--</span>°C</div>
+            <div class="spaliny">Spaliny: <span id="tempSpal" class="temp-val">--</span>°C</div>
+        </div>
+        <div class="chart-container"><canvas id="chartKotel"></canvas></div>
+    </div>
+
+    <div class="box">
+        <h3>2. Akumulační nádrže</h3>
+        <div style="display:flex; justify-content:center; flex-wrap:wrap; gap:15px; margin-bottom:15px;">
+            <div>Horní: <span id="temp2" class="temp-val">--</span>°C</div>
+            <div>Střed 1: <span id="temp3" class="temp-val">--</span>°C</div>
+            <div>Střed 2: <span id="temp4" class="temp-val">--</span>°C</div>
+            <div>Dolní: <span id="temp5" class="temp-val">--</span>°C</div>
+        </div>
+        <div class="chart-container"><canvas id="chartAku"></canvas></div>
+    </div>
+
+    <div class="box">
+        <h3>3. Venkovní teplota</h3>
+        <div style="margin-bottom:10px;">Aktuálně venku: <span id="temp6" class="temp-val">--</span>°C</div>
+        <div class="chart-container"><canvas id="chartVenku"></canvas></div>
+    </div>
+
+    <div class="box" style="background: #fff5f5; border: 1px solid #ffcccc;">
+        <h3>🛠 Servisní funkce</h3>
+        <div style="display:flex; justify-content:center; flex-wrap:wrap; gap:10px;">
+            <button onclick="location.href='/list_page'" style="background:#e3f2fd; border-color:#2196f3;">📊 Tabulka historie</button>
+            <button onclick="location.href='/scan'" style="background:#e8f5e9; border-color:#4caf50;">🔍 Skenovat čidla</button>
+            <button onclick="downloadHistory()" style="background:#e1f5fe; border-color:#03a9f4;">💾 Stáhnout zálohu CSV</button>
+            <button onclick="showErrorLogs()" style="background:#ffcccc; border-color:#f44336;">⚠️ Zobrazit chyby čidel</button>
+            <button onclick="if(confirm('Opravdu restartovat?')) location.href='/restart'" style="background:#fff3e0; border-color:#ff9800;">🔄 Restartovat ESP</button>
+            <button onclick="handleDelete()" style="background:#ffebee; border-color:#f44336; color:red; font-weight:bold;">🗑 Smazat historii!</button>
+        </div>
+
+        <div id="errorLogTable" style="margin-top:20px; font-family:monospace; font-size:0.85em; display:none; background:white; border:1px solid #ffcccc; padding:10px; border-radius:5px; text-align:left; max-height:300px; overflow-y:auto;">
+        </div>
+    </div>
+
+    <script>
+        var rawData = [];
+        var currentRange = 72; // Výchozí zobrazení 12 hodin (72 záznamů po 10 minutách)
+        var cKotel = null, cAku = null, cVenku = null;
+
+        // HLAVNÍ SPOUŠTĚČ PO NAČTENÍ STRÁNKY
+        window.onload = async function() {
+            console.log("Stránka načtena, inicializuji...");
+            initCharts();        // 1. Vytvoří prázdné grafy (bílá plátna)
+            await loadHistory(); // 2. Počká na stažení dat z ESP32
+            refreshCharts();     // 3. Vloží stažená data do grafů
+            updateDashboard();   // 4. Načte aktuální teploty a spustí smyčku
+            setInterval(updateDashboard, 60000);
+        };
+
+        async function loadHistory() {
+            try {
+                console.log("Stahuji historii...");
+                const res = await fetch('/api/history');
+                const text = await res.text();
+                
+                if (!text || text === "no_data") {
+                    console.log("Historie je prázdná.");
+                    return;
+                }
+
+                const lines = text.trim().split('\n');
+                rawData = lines.map(line => {
+                    return line.replace(/"/g, '').split(',').map(s => s.trim());
+                }).filter(p => p.length >= 8);
+
+                console.log("Úspěšně zpracováno řádků: " + rawData.length);
+            } catch (e) { 
+                console.error('Chyba při loadHistory:', e); 
+            }
+        }
+
+        async function updateDashboard() {
+            try {
+                const res = await fetch('/api/data');
+                if (!res.ok) throw new Error("Server neodpovídá");
+                const d = await res.json();
+
+                // Čas aktualizace
+                const ted = new Date();
+                const casString = ted.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+                const lastUpEl = document.getElementById('lastUpdateDisp');
+                lastUpEl.innerText = casString;
+                
+                // Vizuální zpětná vazba
+                lastUpEl.style.color = "green";
+                setTimeout(() => { lastUpEl.style.color = "blue"; }, 500);
+
+                // UPTIME a RSSI - přidána kontrola existence
+                if (d.uptime) document.getElementById('uptimeDisp').innerText = d.uptime;
+                
+                if (d.rssi !== undefined) {
+                    const rssi = d.rssi;
+                    const rssiEl = document.getElementById('rssiDisp');
+                    const qualEl = document.getElementById('wifiQual');
+                    rssiEl.innerText = rssi;
+                    
+                    if (rssi > -60) { qualEl.innerText = "🟢 Výborný"; rssiEl.style.color = "green"; }
+                    else if (rssi > -75) { qualEl.innerText = "🟡 Dobrý"; rssiEl.style.color = "orange"; }
+                    else { qualEl.innerText = "🔴 Slabý"; rssiEl.style.color = "red"; }
+                }
+
+                // Teploty S1-S7
+                if (d.t && Array.isArray(d.t)) {
+                    d.t.forEach((val, i) => { 
+                        const el = document.getElementById('temp' + i);
+                        if(el) el.innerText = (val < -50) ? "CHYBA" : val.toFixed(1);
+                    });
+                }
+                
+                // Spaliny
+                if (d.spal !== undefined) {
+                    document.getElementById('tempSpal').innerText = d.spal.toFixed(0);
+                }
+
+                // Přidání do grafu (jen pokud máme všechna data)
+                if (d.t && d.spal !== undefined) {
+                    let nowCas = ted.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+                    rawData.push([nowCas, ...d.t.map(v => v.toString()), d.spal.toString()]);
+                    if(rawData.length > 3000) rawData.shift();
+                    refreshCharts();
+                }
+
+            } catch(e) { 
+                console.error('Update selhal:', e); 
+                document.getElementById('lastUpdateDisp').innerText = "CHYBA SPOJENÍ";
+                document.getElementById('lastUpdateDisp').style.color = "red";
+            }
+        }
+
+        function initCharts() {
+            // Prevence chyby "Canvas is already in use"
+            if (cKotel) cKotel.destroy();
+            if (cAku) cAku.destroy();
+            if (cVenku) cVenku.destroy();
+
+            cKotel = drawGraph('chartKotel', [], [
+                {label:'Vstup', borderColor:'blue', data: []},
+                {label:'Výstup', borderColor:'orange', data: []},
+                {label:'Spaliny', borderColor:'red', data: []}
+            ]);
+            cAku = drawGraph('chartAku', [], [
+                {label:'Horní', borderColor:'darkred', data: []},
+                {label:'Střed 1', borderColor:'red', data: []},
+                {label:'Střed 2', borderColor:'orange', data: []},
+                {label:'Dolní', borderColor:'blue', data: []}
+            ]);
+            cVenku = drawGraph('chartVenku', [], [
+                {label:'Venkovní', borderColor:'green', data: []}
+            ]);
+        }
+
+        function drawGraph(id, labels, datasets) {
+            // Vytvoří nový graf s daným ID, prázdnými štítky a datasetemi. 
+            // Nastavení je optimalizováno pro rychlé načítání a přehlednost. 
+            // Animace jsou vypnuté, zobrazení je responzivní, a osy jsou nastaveny tak, aby zobrazovaly pouze každý 10. štítek pro lepší přehlednost. 
+            // Legenda je umístěna dole a zobrazuje pouze názvy bez ikon. 
+            // Body jsou skryté a křivky jsou zjemněné pro lepší vizuální dojem.
+            return new Chart(document.getElementById(id), {
+                type: 'line',
+                data: {labels: labels, datasets: datasets},
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    animation: false, // Vypneme animace pro rychlejší načítání
+                    scales: {
+                        y: { 
+                            ticks: { stepSize: 5 } // Nastaví krok na 5°C pro lepší čitelnost
+                        },
+                        x: {
+                            ticks: {
+                                // Automaticky vybere popisky tak, aby se nepřekrývaly
+                                autoSkip: true,
+                                maxTicksLimit: 12, // Maximálně 12 popisků na celou šířku (cca co hodina u 12h rozsahu)
+                                maxRotation: 0,
+                                minRotation: 0
+                            },
+                            grid: {
+                                display: false // Volitelné: vypne svislé čáry mřížky, graf bude čistší
+                            }
+                        }
+                    },
+                    // Legenda dole a bez zbytečných ikon
+                    plugins: { legend: { position: 'bottom' } },
+                    // Odstraníme body a zjemníme křivky
+                    elements: { point: { radius: 0 }, line: { tension: 0.2 } }
+                }
+            });
+        }
+
+        function refreshCharts() {
+            if(!cKotel || rawData.length === 0) return;
+            
+            const viewData = rawData.slice(-currentRange);
+            const lbls = viewData.map(r => r[0]);
+
+            const up = (c, idxs) => {
+                c.data.labels = lbls;
+                
+                c.data.datasets.forEach((ds, i) => { 
+                    let lastValidValue = null; // Pomocná proměnná pro "Forward Fill"
+                    
+                    ds.data = viewData.map(r => {
+                        let val = parseFloat(r[idxs[i]]);
+                        
+                        if (val > -50) {
+                            // Hodnota je v pořádku, uložíme ji jako poslední platnou
+                            lastValidValue = val;
+                            return val;
+                        } else {
+                            // Hodnota je chybná (-127), zkusíme použít tu předchozí
+                            // Pokud nemáme ani předchozí (chyba hned na začátku), vrátíme null
+                            return lastValidValue;
+                        }
+                    });
+                });
+                
+                c.update('none');
+            };
+
+            up(cKotel, [1, 2, 8]);
+            up(cAku, [3, 4, 5, 6]);
+            up(cVenku, [7]);
+        }
+
+        function setRange(p, btn) {
+            currentRange = p;
+            // Zvýrazníme aktivní tlačítko
+            var btns = btn.parentNode.getElementsByTagName('button');
+            // Reset všech tlačítek
+            for(var i=0; i<btns.length; i++) btns[i].style.background = '#fff';
+            // Zvýrazníme aktuální
+            btn.style.background = '#ddd';
+            // Obnovíme grafy s novým rozsahem
+            refreshCharts();
+        }
+
+        function downloadHistory() {
+            const link = document.createElement("a");
+            link.href = "/api/history";
+            link.download = "history.csv";
+            link.click();
+        }
+
+        function showErrorLogs() {
+            const tableDiv = document.getElementById('errorLogTable');
+            // Najdeme řádky, kde je některá hodnota (od indexu 1 do 7) menší než -50
+            const errorRows = rawData.filter(r => {
+                for(let i=1; i<=7; i++) {
+                    if(parseFloat(r[i]) < -50) return true;
+                }
+                return false;
+            });
+
+            if (errorRows.length === 0) {
+                alert("V načtené historii nejsou žádné chyby čidel.");
+                tableDiv.style.display = 'none';
+                return;
+            }
+
+            let html = "<strong>Nalezené chyby (celkem " + errorRows.length + "):</strong><br>";
+            html += "<table border='1' style='width:100%; border-collapse: collapse;'>";
+            errorRows.forEach(r => {
+                html += "<tr><td>" + r.join("</td><td>") + "</td></tr>";
+            });
+            html += "</table>";
+            
+            tableDiv.innerHTML = html;
+            tableDiv.style.display = 'block';
+        }
+
+        function handleDelete() {
+            if (confirm('VAROVÁNÍ: Veškerá historie bude smazána. Pokračovat?')) {
+                location.href = '/delete';
+            }
+        }
+
+        // Tikání uptime každou vteřinu na straně prohlížeče
+        setInterval(function() {
+            let el = document.getElementById('uptimeDisp');
+            let text = el.innerText;
+            
+            // Rozpoznání formátu "1d 02:15:05" pomocí regulárního výrazu
+            let match = text.match(/(\d+)d\s+(\d+):(\d+):(\d+)/);
+            if (!match) return;
+
+            let d = parseInt(match[1]);
+            let h = parseInt(match[2]);
+            let m = parseInt(match[3]);
+            let s = parseInt(match[4]);
+
+            s++;
+            if (s >= 60) { s = 0; m++; }
+            if (m >= 60) { m = 0; h++; }
+            if (h >= 24) { h = 0; d++; }
+
+            el.innerText = d + "d " + 
+                String(h).padStart(2, '0') + ":" + 
+                String(m).padStart(2, '0') + ":" + 
+                String(s).padStart(2, '0');
+        }, 1000);
+    </script>
+</body>
+</html>

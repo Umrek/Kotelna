@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Skenování - Kotelna</title>
+    <style>
+        body{font-family:sans-serif; background:#f0f2f5; text-align:center; padding:10px;}
+        .box{background:white; padding:15px; margin:10px auto; border-radius:10px; max-width:800px; box-shadow:0 2px 4px rgba(0,0,0,0.1);}
+        .sensor{background:#e8f5e9; margin:10px; padding:10px; border-radius:5px; border-left:5px solid #4caf50; text-align:left; font-family:monospace;}
+        .new{background:#fff3cd; border-left-color: #ff9800;}
+        .btn{display:inline-block; padding:10px 20px; margin:10px; background:#007bff; color:white; text-decoration:none; border-radius:5px;}
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>Skenování OneWire sběrnice</h2>
+        <a href="/" class="btn">← Zpět na Dashboard</a>
+        <button onclick="location.reload()" class="btn" style="background:#4caf50;">Aktualizovat sken</button>
+        <div id="results">Hledám čidla...</div>
+    </div>
+
+    <script>
+        window.onload = async function() {
+            try {
+                const res = await fetch('/api/scan');
+                const sensors = await res.json();
+                const div = document.getElementById('results');
+                div.innerHTML = '';
+                
+                sensors.forEach((s, i) => {
+                    const divS = document.createElement('div');
+                    divS.className = 'sensor ' + (s.known ? '' : 'new');
+                    divS.innerHTML = `<b>#${i+1}:</b> ${s.addr}<br> Stav: ${s.known ? '✅ Známé - ' + s.name : '⚠️ Neznámé (zkopíruj do kódu)'}`;
+                    div.appendChild(divS);
+                });
+                if(sensors.length === 0) div.innerHTML = "Žádná čidla nenalezena.";
+            } catch(e) { document.getElementById('results').innerHTML = "Chyba skenování."; }
+        }
+    </script>
+</body>
+</html>

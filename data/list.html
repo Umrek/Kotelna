@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Historie - Kotelna</title>
+    <style>
+        body{font-family:sans-serif; background:#f0f2f5; text-align:center; padding:10px;}
+        .box{background:white; padding:15px; margin:10px auto; border-radius:10px; max-width:1000px; box-shadow:0 2px 4px rgba(0,0,0,0.1);}
+        table{width:100%; border-collapse:collapse; font-size: 0.9em;}
+        th, td{padding:8px; border:1px solid #ddd; text-align:center;}
+        th{background:#eee; position: sticky; top: 0;}
+        .btn{display:inline-block; padding:10px 20px; margin:10px; background:#007bff; color:white; text-decoration:none; border-radius:5px;}
+        tr:nth-child(even){background-color: #f9f9f9;}
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>Kompletní historie logování</h2>
+        <a href="/" class="btn">← Zpět na Dashboard</a>
+        <div style="overflow-x:auto;">
+            <table id="historyTable">
+                <thead>
+                    <tr><th>Čas</th><th>S1</th><th>S2</th><th>S3</th><th>S4</th><th>S5</th><th>S6</th><th>Venku</th><th>Spal</th></tr>
+                </thead>
+                <tbody id="tableBody">
+                    <tr><td colspan="9">Načítám data...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        window.onload = async function() {
+            try {
+                const res = await fetch('/api/history');
+                const text = await res.text();
+                const lines = text.trim().split('\n');
+                const tbody = document.getElementById('tableBody');
+                tbody.innerHTML = '';
+
+                lines.reverse().forEach(line => { // Od nejnovějšího
+                    const cols = line.replace(/"/g, '').split(',');
+                    if (cols.length >= 8) {
+                        let row = "<tr>";
+                        cols.forEach(c => row += "<td>" + c + "</td>");
+                        row += "</tr>";
+                        tbody.innerHTML += row;
+                    }
+                });
+            } catch(e) { document.getElementById('tableBody').innerHTML = "Chyba načítání."; }
+        }
+    </script>
+</body>
+</html>
